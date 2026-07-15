@@ -10,6 +10,7 @@
 /programs/
 
 # Local agent/review artifacts
+/.pi/
 /.pi-subagents/
 /examples/
 /programs/

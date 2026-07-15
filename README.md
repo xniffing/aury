@@ -1,184 +1,703 @@
-# Aury v0
+# Aury
 
-A working prototype of the language proposed in [`aury-proposal.md`](aury-proposal.md):
-**a small, strongly-typed, s-expression IR co-designed around an LLM repair
-loop, with an intent-verification gate, lowering (sketch) to MLIR/LLVM.**
+### A repair-oriented intermediate language for reliable AI-generated programs
 
-The interesting invention is *not* "AI writes LLVM." It is the **validated
-semantic layer + repair protocol** sitting between the model and LLVM. This
-repo implements that layer and the closed loop:
+> **Research prototype · v0 · Rust implementation · LLVM native backend**
 
+Aury is a small, strongly typed, s-expression intermediate language designed
+around a closed LLM repair loop. Its central claim is not that language models
+can emit low-level code. The claim is that a language, validator, repair
+protocol, and intent-verification harness can be **co-designed** so that model
+errors become bounded, structured, and mechanically repairable.
+
+The system implements the following acceptance loop:
+
+```text
+intent
+  ↓
+structured generation
+  ↓
+parse → type/effect/region validation → intent verification
+  ↓ accepted                                      ↓ rejected
+interpreter / LLVM backend       ranked admissible repairs + counterexamples
+  ↑                                                   ↓
+  └──────────────── patch or regenerate ──────────────┘
 ```
-generate → validate → (reject + structured admissible repairs) → patch → re-validate → accept-or-regenerate
+
+The companion document [`aury-proposal.md`](aury-proposal.md) presents the
+broader research programme. This README describes the **implemented prototype**,
+its thesis, architecture, evidence, and limitations.
+
+---
+
+## Contents
+
+1. [Abstract](#abstract)
+2. [Research thesis](#research-thesis)
+3. [Contributions](#implemented-contributions)
+4. [System architecture](#system-architecture)
+5. [Language and semantics](#language-and-semantics)
+6. [Structural validation](#structural-validation)
+7. [Repair protocol](#repair-protocol)
+8. [Intent verification](#intent-verification)
+9. [AI authoring surface](#ai-authoring-surface)
+10. [Interpreter and native backend](#interpreter-and-native-backend)
+11. [Case study: live lunar distance](#case-study-live-lunar-distance)
+12. [Build and use](#build-and-use)
+13. [Evaluation](#evaluation-and-evidence)
+14. [Scope and limitations](#scope-limitations-and-threats-to-validity)
+15. [Repository map](#repository-map)
+
+---
+
+## Abstract
+
+General-purpose compilers are optimized to help humans author programs. They
+accept flexible surfaces, infer omitted information, and explain failures in
+natural language. An LLM-based coding loop has a different failure profile: it
+benefits from canonical structure, explicit semantics, stable node identity,
+and a finite set of valid next actions.
+
+Aury explores that alternative design point. Programs are represented as a
+small typed IR. Every expression has a content-derived identity. Types,
+effects, and regions are explicit. Validation failures are emitted as
+structured rejection objects containing ranked repairs that the validator has
+already determined to be locally admissible. Separately, generated properties
+exercise the implementation and return shrunk counterexamples when behavior
+violates the stated intent.
+
+Accepted programs can run in a tree-walking interpreter or lower through a
+static, type-aware LLVM backend. Differential tests require both backends to
+produce the same observable value for scalar and aggregate programs. The
+prototype therefore studies reliability at the point of acceptance rather
+than first-shot generation accuracy.
+
+---
+
+## Research thesis
+
+The useful unit of design is not the language alone. It is the combined system:
+
+```text
+language + validator + repair protocol + intent gate + execution backends
 ```
 
-…with an **intent gate** (property tests + contracts + vacuity check) sitting
-next to the **structural gate** (types / effects / regions). Both gates emit
-repair signals.
+Aury investigates four questions:
 
-## What v0 actually implements
+- **RQ1 — Repairability:** Can a language constrain common generation failures
+  to local, machine-addressable rejections with a small set of valid repairs?
+- **RQ2 — Intent:** Can executable, non-vacuous properties reduce the gap
+  between “well typed” and “does what was requested”?
+- **RQ3 — Semantic stability:** Can interpreter/native differential testing
+  preserve language semantics across lowering to LLVM?
+- **RQ4 — Authoring:** Can a structured JSON generation surface eliminate
+  delimiter and grammar failures while preserving one canonical IR?
 
-| Part | Status |
+The prototype does not yet provide a statistical answer to these questions.
+It provides an executable artifact in which the mechanisms can be tested and
+measured.
+
+### Non-goals
+
+Aury is not intended to replace Rust, C++, Python, or their ecosystems. It is
+not currently self-hosted, does not attempt general-purpose application
+development, and does not claim that generated specifications perfectly encode
+human intent. The target is a compact experimental substrate for AI-generated
+algorithms, transformations, and small tools.
+
+---
+
+## Implemented contributions
+
+| Component | Prototype status |
 |---|---|
-| s-expression reader (one-screen, unambiguous) | ✅ `src/sexpr.rs` |
-| Content-addressed Merkle node ids (SHA-256 of raw form) | ✅ `src/id.rs` |
-| Typed AST + conversion from s-exprs | ✅ `src/ast.rs` |
-| Explicit types + effect rows (**no inference**) | ✅ `src/types.rs` |
-| Type / effect / region checker → structured rejections | ✅ `src/validate.rs` |
-| **Repair protocol**: ranked, *admissible-by-construction* patches | ✅ `src/repair.rs` |
-| Contracts + property tests + shrinking + vacuity check | ✅ `src/spec.rs` |
-| Tree-walking interpreter (v0 execution backend) | ✅ `src/interp.rs` |
-| Closed repair loop (auto-apply lowest-cost admissible patch) | ✅ `src/loop_driver.rs` |
-| **Native lowering: Aury → LLVM IR → executable (via clang)** | ✅ `src/lower.rs` |
+| Canonical s-expression reader | Implemented |
+| Typed-object JSON authoring surface | Implemented |
+| Content-addressed SHA-256 node IDs | Implemented |
+| Explicit type/effect/region checker | Implemented |
+| Structured rejection objects | Implemented |
+| Ranked repair candidates | Implemented for core validation failures |
+| Closed repair loop with budgets | Implemented |
+| Seeded property testing | Implemented |
+| Counterexample shrinking | Implemented |
+| Structural vacuity detection | Implemented |
+| Tree-walking interpreter | Implemented |
+| Static, type-aware LLVM lowering | Implemented |
+| Native vectors, structs, results, strings, and RNG | Implemented |
+| Interpreter/native differential tests | Implemented |
+| Full arena lifetime semantics | Deferred; v0 `region`/`copy` are explicit no-ops |
+| SMT contract discharge | Not implemented |
+| Real MLIR dialect pipeline | Not implemented; v0 emits LLVM IR directly |
+| General FFI and OS capability surface | Not implemented |
 
-The native backend emits LLVM IR and uses `clang` plus `runtime/aury_rt.c`.
-It supports the scalar core, strings/results, immutable vectors and structs,
-and deterministic SplitMix64 RNG with interpreter-equivalent output.
+This distinction matters: [`aury-proposal.md`](aury-proposal.md) is a design
+proposal; the table above is the honest implementation boundary.
 
-## Build & test
+---
 
-```bash
-cargo build
-cargo test        # unit, validation, interpreter, and native parity coverage
+## System architecture
+
+### Compilation and execution pipeline
+
+```text
+Typed-object JSON ──┐
+                    ├──> canonical Sexpr ──> typed AST + Merkle IDs
+Aury s-expression ──┘                           │
+                                                ├──> structural validator
+                                                │      ├─ accepted
+                                                │      └─ rejection + repairs
+                                                │
+                                                ├──> property-test harness
+                                                │      ├─ accepted
+                                                │      └─ shrunk counterexample
+                                                │
+                                                ├──> interpreter
+                                                │
+                                                └──> typed LLVM IR
+                                                       + generated entry wrapper
+                                                       + embedded C runtime
+                                                       └──> clang ──> executable
 ```
 
-## The headline demo: the loop closes automatically
+### Acceptance protocol
 
-```bash
-$ aury validate examples/broken.aury      # a type error
-rejected: 1 rejection(s)
-{ "gate": "type", "kind": "ARG_TYPE_MISMATCH",
-  "node": "6ba6f2e6...", "expected": "i64", "received": "str",
+1. **Generate** a typed-object JSON tree or canonical Aury expression.
+2. **Parse** into one canonical s-expression representation.
+3. **Validate** types, effects, affine use, regions, calls, and control flow.
+4. **Repair** rejected nodes using ranked structured candidates, or regenerate
+   when the local repair budget is exhausted.
+5. **Verify intent** by running seeded properties and shrinking failures.
+6. **Execute** only after the structural and intent gates accept the module.
+7. **Compare backends** where native execution is requested.
+
+The separation between structural and intent gates is deliberate. Structural
+validation can prove that a program is internally coherent; it cannot prove
+that the specification matches what a user meant.
+
+---
+
+## Language and semantics
+
+Aury is intentionally small and explicit. There is no type inference and no
+operator precedence to recover.
+
+### Types
+
+```text
+i64
+bool
+str
+unit
+(vec T)
+(struct Name)
+(result OkT ErrT)
+(ref region mut|ref T)
+region
+```
+
+### Core forms
+
+```scheme
+(lit 42)
+(ref name)
+(let name i64 (lit 1) body)
+(call i64.add left right)
+(if condition (then value) (else value))
+(match value (pattern arm) ...)
+(block statement ... tail)
+(loop body)
+(return value)
+(vec-new (vec i64) ...)
+(idx vector index)
+(len vector)
+(new-struct Name (field value) ...)
+(get struct-value field)
+(region r body)
+(copy value)
+(cast str value)
+```
+
+### Builtins
+
+- **Integer:** `add`, `sub`, `mul`, `div`, `mod`, comparisons, `neg`, `abs`,
+  `to_str`, and `parse`/`from_str`
+- **Boolean:** `and`, `or`, `not`, and equality
+- **String:** equality, inequality, concatenation, and length
+- **Result:** `is_ok`
+- **RNG:** deterministic `rng.next`, gated by the `rng` effect
+
+### Defined edge behavior
+
+Aury semantics are defined before LLVM lowering:
+
+- integer addition, subtraction, multiplication, negation, and absolute value
+  wrap in two’s-complement arithmetic;
+- `i64::MIN / -1` and the corresponding remainder have defined behavior;
+- division or remainder by zero traps;
+- vector indices are bounds checked and trap on negative or excessive indices;
+- RNG uses seeded SplitMix64, so identical seed and execution order produce
+  identical values;
+- immutable aggregate display is deterministic and field-ordered.
+
+These rules prevent LLVM undefined behavior from silently becoming Aury
+language behavior.
+
+---
+
+## Structural validation
+
+The validator operates over the explicit AST and emits machine-readable
+[`Rejection`](src/repair.rs) values rather than prose-only diagnostics.
+Implemented checks include:
+
+- function call arity and argument types;
+- declared and explicit return types;
+- branch and match-arm agreement with divergence-aware control flow;
+- duplicate functions, structs, and fields;
+- vector element, index, and field-access types;
+- effect-row containment, including `rng` use from pure functions;
+- affine move tracking and explicit copy checks;
+- region names and region scope;
+- local binding scope and nested shadow restoration.
+
+A rejection identifies the gate, rejection kind, Merkle node, structural path,
+expected and received values, context, and candidate repairs.
+
+```json
+{
+  "gate": "type",
+  "kind": "ARG_TYPE_MISMATCH",
+  "node": "content-derived-node-id",
+  "expected": "i64",
+  "received": "str",
   "repairs": [
-    { "id": "r1", "action": "replace_node", "with": "(lit 0)", "cost": 2, ... },
-    { "id": "r2", "action": "change_param_type", ... "cost": 5, ... } ] }
-
-$ aury loop examples/broken.aury 12345     # auto-repair + re-validate
-[loop] applied repair `r1` (action=replace_node) to node 6ba6f2e6...; patch #1
-[loop] accepted: type/effect/region checks pass; property tests pass
-=== ACCEPTED after 1 patches ===
-(module broken (fn add (params (a i64) (b i64)) (ret i64) (body (lit 0))) ...)
+    {
+      "id": "r1",
+      "action": "replace_node",
+      "cost": 2,
+      "preserves_effects": true
+    }
+  ]
+}
 ```
 
-The validator proposes only **admissible** repairs — replacements it has
-already checked are locally valid. The model picks from a menu of known-good
-fixes; it cannot pick an invalid one. A `wrap` conversion is only offered if it
-*returns the expected type* (this guard is what prevents the runaway repair
-chain you'd otherwise get from, e.g., wrapping `i64.parse`, which returns
-`result`, around an `i64` slot).
+Merkle IDs make repairs node-oriented rather than line-oriented. The same
+canonical form produces the same IDs, allowing a model or tool to address a
+semantic node without reconstructing a textual diff.
+
+---
+
+## Repair protocol
+
+Aury’s differentiating mechanism is that the compiler participates in repair
+selection.
+
+### Admissibility
+
+A repair is offered only when the validator knows the replacement is locally
+valid. For example, a conversion is not suggested merely because its name
+sounds plausible; its output type must agree with the rejected position.
+This prevents repair chains in which one guessed conversion creates a larger
+mismatch elsewhere.
+
+### Ranking
+
+Candidates carry a cost and preservation metadata. A local literal replacement
+is cheaper than changing a public parameter type and propagating that change
+to every caller. The loop can therefore prefer small, semantics-preserving
+changes while still exposing broader regeneration choices.
+
+### Termination
+
+The repair driver tracks attempts and applies finite budgets. If a repair does
+not close the rejection, the system escalates to another candidate or asks for
+regeneration. “Keep asking the model until the compiler stops complaining” is
+not considered a termination strategy.
+
+### Parse repair
+
+The parse gate is inside the loop. Unterminated s-expression lists can be
+repaired mechanically by appending the known number of missing delimiters.
+For normal AI authoring, the typed-object JSON surface avoids this class of
+failure entirely.
+
+---
 
 ## Intent verification
 
+Structural validity is necessary but insufficient. Aury modules may include
+properties generated alongside the implementation:
+
+```scheme
+(spec
+  (property add-commutes
+    (forall ((a i64) (b i64))
+      (call i64.eq
+        (call add (ref a) (ref b))
+        (call add (ref b) (ref a))))))
+```
+
+The v0 harness provides:
+
+1. **Seeded generation** for integers, booleans, strings, and vectors.
+2. **Property execution** in the interpreter.
+3. **Failure shrinking** to produce smaller counterexamples.
+4. **Structural vacuity detection:** a property that calls no user-defined
+   function is rejected because it does not exercise an implementation.
+5. **Structured property failures** that re-enter the repair workflow.
+
+The vacuity check is intentionally conservative and structural. A property
+that exercises a function and always passes may be a correct invariant; random
+attempts to make it fail cannot distinguish correctness from vacuity.
+
+### Intent boundary
+
+Passing properties proves only that the implementation satisfies those
+properties for the tested inputs. It does not prove that the properties encode
+the user’s full intent. Wrong specifications remain possible. Aury makes the
+specification executable, inspectable, reproducible, and harder to make
+trivially meaningless; the user remains the final oracle.
+
+Contract forms are represented in the AST, but full contract execution,
+implication checking, and SMT discharge remain future work.
+
+---
+
+## AI authoring surface
+
+Although the canonical stored language is an s-expression IR, the recommended
+model-facing surface is typed-object JSON:
+
+```json
+{
+  "kind": "call",
+  "op": "i64.add",
+  "args": [
+    { "kind": "ref", "name": "a" },
+    { "kind": "lit", "value": 1 }
+  ]
+}
+```
+
+Every node has an explicit `kind`; calls, bindings, branches, and types do not
+depend on delimiter balancing or precedence. `aury ingest` converts this tree
+to the canonical s-expression path and then runs the same AST builder and
+validator used by textual Aury.
+
 ```bash
-$ aury test examples/buggy-max.aury 12345
-{ "gate": "property-test", "kind": "PROPERTY_FALSIFIED",
-  "path": "max-at-least-a",
-  "received": "falsified for: a = 0i64, b = -2i64",   # <-- shrunk, minimal
-  "repairs": [ { "action": "fix_impl_or_spec", ... } ] }
+target/release/aury ingest input.json output.aury
+target/release/aury emit-json output.aury
 ```
 
-A correct implementation that genuinely exercises a function is **not** flagged
-vacuous (`correct_impl_is_not_flagged_vacuous`). A property that doesn't
-exercise any implementation is flagged vacuous
-(`vacuity_check_flags_property_that_does_not_exercise_impl`). The vacuity check
-is sound — no false positives on correct code — because it's structural
-("does the body call any user fn?"), not a random "can it fail" probe.
+The JSON and s-expression paths are tested to produce identical canonical IR
+and identical node IDs. JSON is therefore an authoring interface, not a second
+language with different semantics.
 
-## Design decisions that make it AI-friendly (and where it diverges from Rust)
+---
 
-- **s-expressions, not a Rust-like surface.** Unambiguous to parse; node ids
-  are content-addressed hashes of the raw form, so repair patches address
-  *nodes*, not source lines.
-- **No inference anywhere.** Types, effects, and regions are written out. A
-  wrong annotation is a *local* error with a *local* repair, not a
-  constraint-propagation mystery.
-- **Affine ownership + explicit regions**, with no lifetime inference / no
-  variance / no elision — the things in Rust's borrow checker that are hard
-  for humans *and* models.
-- **Effects as capability-gated effect rows.** A pure function calling an
-  effectful op is statically rejected with an `add_capability` repair.
-- **No undefined behavior at the Aury layer.** Integer arithmetic has defined
-  wrapping behavior (including `MIN / -1`, negation, and absolute value), while
-  div/mod by zero and vector OOB access trap. Semantics are defined before LLVM.
+## Interpreter and native backend
 
-## AI authoring surface: JSON ingest
+### Interpreter
 
-The proposal says the model should emit a *structured tree*, not free text it
-has to hand-balance. v0 implements this: author Aury as a typed-object JSON
-(`"kind"` tags, no delimiter counting), and `aury ingest` converts it to the
-canonical s-expr IR, validates it, and writes `.aury`.
+[`src/interp.rs`](src/interp.rs) is the executable semantic reference for v0.
+It evaluates typed values, structured control flow, vectors, structs, results,
+strings, region/copy pass-through behavior, and deterministic RNG.
 
-```
-$ aury ingest examples/gcd.json examples/gcd.aury
-ingested examples/gcd.json → examples/gcd.aury (validated)
-$ aury run examples/gcd.aury gcd 48 36
-12
-```
+### LLVM lowering
 
-`aury emit-json <file.aury>` converts the other way (array-form JSON), so the two
-paths round-trip. The headline guarantee — proven by `json_and_sexpr_paths_
-produce_identical_ir` — is that a JSON-authored program and a text-authored
-program produce **byte-identical IR (identical Merkle node ids)**. The JSON
-form is an authoring surface; the s-expr form stays canonical on disk.
+[`src/lower.rs`](src/lower.rs) emits typed LLVM IR for the reachable call graph
+of a selected entry function. It does not lower every function in the module,
+which keeps unsupported or irrelevant code outside a native build.
 
-The repair loop now also covers the **parse gate**: an unterminated list (the
-exact error that hand-authoring deep s-exprs produces) is repaired by
-appending the missing closing parens, bringing parse errors *inside* the
-generate→validate→repair loop instead of outside it:
+| Aury value | Native representation |
+|---|---|
+| `i64`, `bool`, `unit` | LLVM `i64` |
+| `str` | boxed pointer containing length and byte data |
+| `(vec T)` | boxed `{ i64 len, ptr slots }` |
+| struct | boxed contiguous 8-byte slots in declaration order |
+| result | boxed tag and payload slots |
 
-```
-$ printf '(module m (fn fact ... (call fact (call i64.sub (ref n) 1)' | aury loop /dev/stdin 0
-[loop] parse repair: appended 7 closing paren(s)
-[loop] accepted: type/effect/region checks pass; property tests pass
+Pointer-valued aggregate members are converted to and from 64-bit slot bits.
+Type descriptors allow the runtime to print arbitrarily nested vectors,
+structs, and results in exactly the interpreter’s display format.
+
+The native runtime in [`runtime/aury_rt.c`](runtime/aury_rt.c) provides:
+
+- boxed string and aggregate allocation;
+- checked vector access;
+- string operations and integer parsing;
+- deterministic SplitMix64;
+- edge-defined integer division and remainder;
+- recursive descriptor-driven value printing.
+
+Its source is embedded in the CLI binary with `include_str!`, so an installed
+`aury` executable does not depend on the source checkout when invoking clang.
+
+### Native entry values
+
+Scalar CLI syntax remains direct:
+
+```text
+42  true  hello
 ```
 
-## CLI
+Composite values are type-directed JSON:
 
-```
-aury validate <file>          type/effect/region checks; print rejections as JSON
-aury run <file> <fn> [args]   validate then run <fn>; aggregates use typed JSON args
-aury test <file> [seed]        validate then run property tests (shrinking + vacuity)
-aury loop <file> [seed]        the closed repair loop (auto-apply admissible patches;
-                              also repairs parse errors by closing unterminated lists)
-aury ll <file> [out.ll]       Aury → LLVM IR text (the real native backend)
-aury compile <file> <fn> [args] [-o out]  → native executable (clang -O2) and run it
-aury lower <file>             MLIR lowering sketch (structural preview)
-aury ingest <file.json> [out] JSON AST → canonical .aury (the AI authoring surface)
-aury emit-json <file.aury>    .aury → array-form JSON (round-trip)
+```text
+[1, 2, 3]
+{"name":"sample","values":[1,2]}
+{"ok":[1,2]}
+{"err":"message"}
 ```
 
-### Native aggregate ABI and CLI values
+Unknown fields, missing fields, invalid result shapes, malformed JSON, and
+duplicate object keys are rejected before lowering.
 
-Native vectors are boxed `{i64 len, ptr slots}` and structs use contiguous
-8-byte slots in declared-field order. Pointer-valued fields are stored as i64
-bits. Aggregate CLI arguments are type-directed JSON: arrays for vectors,
-objects for structs, and `{"ok": value}` / `{"err": value}` for results;
-scalar argument syntax is unchanged. `region` and `copy` deliberately retain
-v0's interpreter-equivalent immutable-value no-op semantics rather than
-claiming unsafe arena lifetimes.
+### Differential parity
 
-## What v0 explicitly does *not* do (honest scope)
+Native correctness is treated as equivalence with the interpreter, not merely
+successful compilation. Integration tests compare both backends across:
 
-- MLIR-based codegen (native lowering currently emits LLVM IR text directly).
-- Self-hosting (the compiler is Rust).
-- Shared regions + sync primitives, async, traits, parametric types (v1).
-- General-purpose stdlib / ecosystem (not a goal — Aury targets
-  AI-generated tools and small services, not replacing Rust/C++).
+- strings and Unicode-sensitive parsing;
+- vectors, nested vectors, and bounds failures;
+- structs and nested aggregate fields;
+- both result variants;
+- typed branches and nested returns;
+- deterministic RNG sequences;
+- integer overflow and `MIN / -1` edges;
+- generic aggregate output formatting.
 
-## Layout
+---
 
+## Case study: live lunar distance
+
+[`moon-distance/`](moon-distance/) is a larger end-to-end Aury program and
+visual application.
+
+The Aury core computes the Earth–Moon geocentric distance from a Unix timestamp
+using only `i64` arithmetic:
+
+1. seconds since J2000 are converted into the lunar fundamental angles;
+2. angles use millidegree fixed-point representation;
+3. cosine uses Q6 arithmetic and an eighth-order polynomial after quadrant
+   reduction;
+4. 46 periodic terms from the lunar distance series are accumulated;
+5. an immutable `MoonDistance` struct returns center distance, approximate
+   surface distance, one-way light time, and range classification.
+
+```bash
+./moon-distance/run-now.sh
+./moon-distance/run-now.sh --native
 ```
-src/sexpr.rs       canonical s-expression reader
-src/id.rs          content-addressed Merkle node ids (SHA-256)
-src/ast.rs         typed AST + s-expr conversion, assigning ids
-src/types.rs       explicit types + effect rows (no inference)
-src/repair.rs      the repair protocol: rejections + ranked admissible patches
-src/validate.rs    type/effect/region checker emitting rejections
-src/spec.rs        contracts, property tests, shrinking, vacuity check
-src/json.rs        JSON authoring surface → canonical Sexpr (the AI interface)
-src/interp.rs      tree-walking interpreter (v0 backend)
-src/lower.rs       LLVM lowering and generated native entry wrapper
-src/loop_driver.rs the closed repair loop (now covers parse errors too)
-examples/*.aury     calculator, broken, effects-bad, buggy-max, structs, rng-demo
-tests/integration.rs  end-to-end tests of the whole loop
+
+The live dashboard combines vanilla HTML/CSS/JavaScript and D3 with a
+zero-dependency Node server:
+
+```bash
+./moon-distance/start-dashboard.sh
+# http://127.0.0.1:4173
 ```
+
+Aury v0 has no clock or network capability. The server therefore reads the
+system clock, passes the minute timestamp into `aury compile`, executes the
+native LLVM result, parses the returned struct, and exposes it as JSON. The
+browser refreshes at each minute boundary and animates the current separation,
+light-time signal, perigee/apogee position, and session history.
+
+At `2026-07-15T08:32Z`, the model produced approximately **362,738 km** while
+JPL Horizons reported approximately **362,754 km**, a difference of 16 km.
+This comparison is a case-study observation, not a general accuracy bound.
+
+See [`moon-distance/README.md`](moon-distance/README.md) for model details and
+usage.
+
+---
+
+## Build and use
+
+### Requirements
+
+- Rust toolchain with Cargo
+- `clang` for native compilation
+- Node.js only for the optional lunar dashboard
+- Python 3 only to regenerate the lunar typed-object JSON
+
+### Build
+
+```bash
+cargo build --release
+cargo test
+```
+
+The binary is written to `target/release/aury`.
+
+### Quick start
+
+```bash
+AURY=target/release/aury
+
+$AURY validate moon-distance/moon-distance.aury
+$AURY test moon-distance/moon-distance.aury 12345
+$AURY run moon-distance/moon-distance.aury moon-report "$(date -u +%s)"
+$AURY compile moon-distance/moon-distance.aury moon-report "$(date -u +%s)" -o /tmp/moon-native
+```
+
+### CLI
+
+```text
+aury validate <file>             run type/effect/region validation
+aury json <file>                 emit one JSON rejection per line
+aury run <file> <fn> [args...]  execute with the interpreter
+aury test <file> [seed]          run seeded properties and shrinking
+aury loop <file> [seed]          run the closed repair loop
+aury lower <file>                print the structural MLIR sketch
+aury ll <file> [out.ll]          emit validated LLVM IR
+aury compile <file> <fn> [args...] [-o out]
+                                 lower, compile with clang, execute, and print
+aury ingest <file.json> [out]    typed-object/array JSON → canonical Aury
+aury emit-json <file.aury>       canonical Aury → array-form JSON
+```
+
+`aury compile` currently generates a native `main` with the supplied entry
+arguments embedded in the LLVM module, compiles it, and immediately runs it.
+This is suitable for differential testing and small tools; a reusable dynamic
+native library ABI is future work.
+
+---
+
+## Evaluation and evidence
+
+The present evaluation is regression-oriented rather than a published language
+benchmark.
+
+### Automated evidence
+
+`cargo test` covers:
+
+- parser stability and content-addressed IDs;
+- JSON/s-expression round trips;
+- validator rejection kinds and repair ranking;
+- effect violations and repair-loop closure;
+- property failures, shrinking, and vacuity detection;
+- interpreter behavior;
+- clang-backed native parity;
+- malformed aggregate CLI input;
+- recursive descriptor rejection;
+- duplicate definition rejection;
+- output-path and embedded-runtime behavior.
+
+The C runtime is also compiled independently with strict warning settings
+during development.
+
+### Acceptance criterion
+
+For supported native programs, acceptance requires more than producing valid
+LLVM. The observable native result must equal the interpreter result. This
+turns the interpreter into an executable semantics and makes backend drift a
+test failure.
+
+### What has not yet been measured
+
+- first-shot generation success against Python, Rust, or a baseline IR;
+- repair-loop convergence rates over a representative intent corpus;
+- semantic preservation under large-program optimization;
+- user comprehension of generated properties;
+- performance relative to handwritten implementations;
+- effectiveness of admissible repairs versus ordinary compiler diagnostics.
+
+These measurements are necessary before making empirical claims about Aury’s
+advantage for model-generated software.
+
+---
+
+## Scope, limitations, and threats to validity
+
+### Region semantics
+
+The validator represents regions, references, affine values, and explicit
+copies. Native and interpreter v0 semantics intentionally treat `region` and
+`copy` as immutable-value pass-through operations. Native aggregate allocations
+live for the process lifetime. The prototype does **not** claim arena lifetime,
+aliasing, or deallocation guarantees that it has not implemented.
+
+### Contracts and proof
+
+Contract nodes are parsed, but full runtime assertion wiring, implication
+checking, and SMT proof are incomplete. Property testing is evidence over
+sampled inputs, not formal verification.
+
+### Effects and capabilities
+
+Effect rows and deterministic RNG gating are implemented. The proposal’s
+broader first-class `fs`, `net`, `clock`, `state`, and synchronization
+capability system is not. Extern execution and audited OS shims are deferred.
+
+### Numerical and platform assumptions
+
+The aggregate ABI uses 8-byte slots and pointer-to-`i64` conversion, targeting
+64-bit platforms. The backend invokes `clang` and currently assumes an LLVM IR
+version accepted by the installed toolchain.
+
+### Recursive aggregates
+
+Runtime value descriptors are finite strings. Recursive struct entry types are
+therefore rejected clearly rather than generating an infinite descriptor.
+
+### Specification risk
+
+A property can be non-vacuous and still be incomplete or wrong. Structural
+vacuity detection prevents properties that exercise no implementation; it does
+not establish correspondence with natural-language intent.
+
+### Training-data risk
+
+Aury has little direct pretraining representation compared with mainstream
+languages. Structured JSON authoring and repair menus reduce generation
+freedom, but a broader corpus and controlled comparison are still required.
+
+---
+
+## Repository map
+
+```text
+Cargo.toml                 Rust package and CLI definition
+aury-proposal.md           broader research proposal
+runtime/aury_rt.c          native allocation, arithmetic, RNG, and printing
+
+src/sexpr.rs               canonical s-expression parser
+src/json.rs                model-facing JSON authoring conversion
+src/id.rs                  content-addressed node IDs
+src/ast.rs                 typed AST construction
+src/types.rs               explicit types and effect rows
+src/validate.rs            structural validation and rejection generation
+src/repair.rs              rejection and repair data model
+src/loop_driver.rs         bounded repair-loop driver
+src/spec.rs                property generation, execution, vacuity, shrinking
+src/interp.rs              reference interpreter
+src/value_io.rs            typed CLI JSON parsing and deterministic display
+src/lower.rs               static LLVM lowering and native entry generation
+src/lower_sketch.rs        structural MLIR preview
+src/main.rs                command-line interface and embedded-runtime driver
+
+tests/integration.rs       end-to-end and differential regression suite
+tests/native_parity.aury   aggregate/RNG/control-flow parity fixture
+
+moon-distance/             complete fixed-point Aury case study
+moon-distance/web/         live D3 dashboard and native-data bridge
+```
+
+Generated build output, native executables, LLVM scratch files, and local agent
+artifacts are excluded through [`.gitignore`](.gitignore).
+
+---
+
+## Project status
+
+Aury is an experimental prototype intended for research, learning, and design
+iteration. It demonstrates that a repair-oriented language can be executed end
+to end—from structured generation and validation through intent checks and a
+native LLVM backend—while keeping its unimplemented claims explicit.
+
+The next meaningful milestone is not a larger syntax. It is an evaluation
+corpus that measures repair convergence, specification quality, and accepted
+program reliability against credible baselines.
