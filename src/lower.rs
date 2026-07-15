@@ -31,6 +31,7 @@ pub struct Lowerer {
     retslot: String,
     retty: String,
     errors: Vec<String>,
+    str_literals: Vec<(String, String, String)>, // data name, boxed name, value
 }
 
 /// LLVM type string for an Aury type. Aggregates are boxed pointers.
@@ -41,6 +42,35 @@ fn llvm_type(t: &Type) -> String {
             "ptr".into()
         }
     }
+}
+
+/// Escape bytes for an LLVM `c"..."` constant and append its NUL terminator.
+fn llvm_c_string(value: &str) -> String {
+    let mut escaped = String::new();
+    for byte in value.as_bytes() {
+        match *byte {
+            b' '..=b'~' if *byte != b'"' && *byte != b'\\' => escaped.push(*byte as char),
+            byte => escaped.push_str(&format!("\\{:02X}", byte)),
+        }
+    }
+    escaped.push_str("\\00");
+    escaped
+}
+
+fn emit_string_global(out: &mut String, data_name: &str, boxed_name: &str, value: &str) {
+    let escaped = llvm_c_string(value);
+    out.push_str(&format!(
+        "{} = private constant [{} x i8] c\"{}\"\n",
+        data_name,
+        value.len() + 1,
+        escaped
+    ));
+    out.push_str(&format!(
+        "{} = private constant {{ i64, ptr }} {{ i64 {}, ptr {} }}\n",
+        boxed_name,
+        value.len(),
+        data_name
+    ));
 }
 
 pub fn lower_module(module: &Module) -> Result<String, String> {
@@ -145,6 +175,7 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
         retslot: String::new(),
         retty: String::new(),
         errors: Vec::new(),
+        str_literals: Vec::new(),
     };
     for item in &module.items {
         if let ModuleItem::Fn(f) = item {
@@ -169,21 +200,24 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out_str("declare i64 @aury_str_eq(ptr, ptr)\n");
     l.out_str("declare ptr @aury_i64_to_str(i64)\n");
     l.out_str("declare ptr @aury_i64_parse(ptr)\n");
+    l.out_str("declare ptr @aury_i64_parse_strict(ptr)\n");
+    l.out_str("declare void @aury_str_print(ptr)\n");
     l.out_str("@.fmt = private constant [6 x i8] c\"%lld\\0A\\00\"\n");
-    l.out_str("@.s = private constant [3 x i8] c\"%s\\00\"\n");
-    l.out_str("@.t = private constant [5 x i8] c\"true\\00\"\n");
-    l.out_str("@.f = private constant [6 x i8] c\"false\\00\"\n\n");
+    l.out_str("@.t = private constant [6 x i8] c\"true\\0A\\00\"\n");
+    l.out_str("@.f = private constant [7 x i8] c\"false\\0A\\00\"\n\n");
     for item in &module.items {
         if let ModuleItem::Fn(f) = item {
             if !set.contains(&f.name) {
                 continue;
             }
             let mark = l.out.len();
+            let literal_mark = l.str_literals.len();
             l.errors.clear();
             l.lower_fn(f);
             if !l.errors.is_empty() {
                 if skip_unsupported {
                     l.out.truncate(mark);
+                    l.str_literals.truncate(literal_mark);
                     l.out_str(&format!("; not lowered: {} ({})\n", f.name, l.errors.join("; ")));
                 } else {
                     return Err(format!(
@@ -195,12 +229,17 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
             }
         }
     }
+    // Globals cannot appear in function bodies. Forward references are valid,
+    // so flush all buffered literals after the lowered functions.
+    for (data_name, boxed_name, value) in std::mem::take(&mut l.str_literals) {
+        emit_string_global(&mut l.out, &data_name, &boxed_name, &value);
+    }
     Ok(l.out)
 }
 
 /// Build a runnable native program: lower the reachable set from `entry_fn`,
 /// add a C `main` that calls it with `args` and prints the result.
-pub fn lower_program_with_main(module: &Module, entry_fn: &str, args: &[i64]) -> Result<String, String> {
+pub fn lower_program_with_main(module: &Module, entry_fn: &str, args: &[String]) -> Result<String, String> {
     let mut ir = lower_set(module, &reachable(module, entry_fn), false)?;
     let sig = module
         .items
@@ -226,11 +265,38 @@ pub fn lower_program_with_main(module: &Module, entry_fn: &str, args: &[i64]) ->
         ));
     }
     for p in &sig.params {
-        if !matches!(p.ty, Type::I64 | Type::Bool) {
-            return Err(format!("compile: entry fn `{}` has non-i64/bool param", entry_fn));
+        if !matches!(p.ty, Type::I64 | Type::Bool | Type::Str) {
+            return Err(format!("compile: entry fn `{}` has unsupported param type {:?}", entry_fn, p.ty));
         }
     }
-    let arglist: Vec<String> = args.iter().map(|a| format!("i64 {}", a)).collect();
+    // Build a type-directed argument list. Strings are boxed constants; bools
+    // use the same true/false spelling accepted by `aury run`.
+    let mut arglist: Vec<String> = Vec::new();
+    for (i, p) in sig.params.iter().enumerate() {
+        match p.ty {
+            Type::Str => {
+                let data_name = format!("@.argd{}", i);
+                let boxed_name = format!("@.arg{}", i);
+                emit_string_global(&mut ir, &data_name, &boxed_name, &args[i]);
+                arglist.push(format!("ptr {}", boxed_name));
+            }
+            Type::Bool => {
+                let value = match args[i].as_str() {
+                    "true" => 1,
+                    "false" => 0,
+                    _ => return Err(format!("compile: arg `{}` is not a bool", args[i])),
+                };
+                arglist.push(format!("i64 {}", value));
+            }
+            Type::I64 => {
+                let value: i64 = args[i]
+                    .parse()
+                    .map_err(|_| format!("compile: arg `{}` is not an i64", args[i]))?;
+                arglist.push(format!("i64 {}", value));
+            }
+            _ => unreachable!("entry parameter types were checked above"),
+        }
+    }
     ir.push_str("define i32 @main() {\nentry:\n");
     ir.push_str(&format!("  %r = call {} @aury__{}({})\n", llvm_type(&sig.ret), entry_fn, arglist.join(", ")));
     match sig.ret {
@@ -241,17 +307,13 @@ pub fn lower_program_with_main(module: &Module, entry_fn: &str, args: &[i64]) ->
             ir.push_str("f:\n  call i32 @printf(ptr @.f)\n  ret i32 0\n}\n");
         }
         Type::Str => {
-            ir.push_str("  call i32 @printf(ptr @.s, ptr %r)\n  ret i32 0\n}\n");
+            ir.push_str("  call void @aury_str_print(ptr %r)\n  ret i32 0\n}\n");
         }
         _ => {
             ir.push_str("  call i32 @printf(ptr @.fmt, i64 %r)\n  ret i32 0\n}\n");
         }
     }
     Ok(ir)
-}
-
-pub fn lower_to_mlir_sketch(module: &Module) -> String {
-    crate::lower_sketch::lower_to_mlir_sketch(module)
 }
 
 impl Lowerer {
@@ -382,37 +444,16 @@ impl Lowerer {
         }
     }
 
-    /// Emit a string literal as two globals ({i64,len; ptr data} + the bytes)
-    /// and return the address (a `ptr`).
-    fn str_literal(&mut self, s: &str) -> String {
+    /// Buffer a boxed string literal for module-level emission and return its
+    /// address. LLVM permits the function body to reference the later global.
+    fn str_literal(&mut self, value: &str) -> String {
         let n = self.str_n;
         self.str_n += 1;
-        let bytes = s.as_bytes();
-        let len = bytes.len();
         let data_name = format!("@.sd{}", n);
-        let struct_name = format!("@.s{}", n);
-        // escape
-        let mut esc = String::new();
-        for b in bytes {
-            match *b {
-                b'\\' => esc.push_str("\\\\"),
-                b'"' => esc.push_str("\\22"),
-                c if c.is_ascii_graphic() || c == b' ' => esc.push(c as char),
-                c => esc.push_str(&format!("\\{:02X}", c)),
-            }
-        }
-        esc.push_str("\\00");
-        self.out_str(&format!(
-            "{} = private constant [{} x i8] c\"{}\"\n",
-            data_name,
-            len + 1,
-            esc
-        ));
-        self.out_str(&format!(
-            "{} = private constant {{ i64, ptr }} {{ i64 {}, ptr {} }}\n",
-            struct_name, len, data_name
-        ));
-        struct_name
+        let boxed_name = format!("@.s{}", n);
+        self.str_literals
+            .push((data_name, boxed_name.clone(), value.to_string()));
+        boxed_name
     }
 
     fn lower_call(&mut self, op: &str, args: &[Expr]) -> (Option<String>, String, bool) {
@@ -633,7 +674,7 @@ impl Lowerer {
             ("ptr", "i64") => {
                 // str -> i64: parse to result, trap if !ok, else load val field.
                 let res = self.fresh();
-                self.out_str(&format!("  {} = call ptr @aury_i64_parse(ptr {})\n", res, v));
+                self.out_str(&format!("  {} = call ptr @aury_i64_parse_strict(ptr {})\n", res, v));
                 let ok = self.fresh();
                 self.out_str(&format!("  {} = load i1, ptr {}\n", ok, res));
                 let good = self.fresh_lbl("castok");
@@ -669,14 +710,14 @@ impl Lowerer {
         self.out_str(&format!("  {} = icmp ne i64 {}, 0\n", cz, cv.unwrap()));
         let res = format!("%.if.{}", self.reg);
         self.reg += 1;
-        // need the result type — lower then first to learn it (validator guarantees branches agree)
-        // but we must allocate the slot BEFORE the br, and we don't know the type yet.
-        // Trick: lower then in a tentative way? Simpler: the validator guarantees then/else share
-        // a type; compute it from the AST type info we don't have. Instead, lower then, capture
-        // its type, then allocate the slot with that type. The slot alloca must precede the br, but
-        // we can lower cond, emit icmp, then lower then to LEARN the type, then alloca, then br,
-        // then re-emit then? That double-lowers then. Instead: peek the type via a small helper.
-        let rty = llvm_type(&self.infer_type(then));
+        // A diverging branch has no result type; size the slot from whichever
+        // branch can reach the continuation.
+        let result_ty = if Self::expr_diverges(then) {
+            self.infer_type(els)
+        } else {
+            self.infer_type(then)
+        };
+        let rty = llvm_type(&result_ty);
         self.out_str(&format!("  {} = alloca {}\n", res, rty));
         let then_lbl = self.fresh_lbl("then");
         let else_lbl = self.fresh_lbl("else");
@@ -704,75 +745,139 @@ impl Lowerer {
     }
 
     fn lower_match(&mut self, scrut: &Expr, arms: &[MatchArm]) -> (Option<String>, String, bool) {
-        let (sv, _, sdiv) = self.lower_expr(scrut);
+        if arms.is_empty() {
+            self.err("empty match is not supported in native lowering");
+            return (Some("0".into()), "i64".into(), false);
+        }
+        let scrut_ty = self.infer_type(scrut);
+        let (sv, sty, sdiv) = self.lower_expr(scrut);
         if sdiv {
             return (None, String::new(), true);
         }
         let sv = sv.unwrap();
-        let rty = llvm_type(&self.infer_type(&arms[0].body));
+        let result_ty = self.infer_match_type(arms, &scrut_ty);
+        let rty = llvm_type(&result_ty);
         let res = format!("%.match.{}", self.reg);
         self.reg += 1;
         self.out_str(&format!("  {} = alloca {}\n", res, rty));
         let cont_lbl = self.fresh_lbl("cont");
         let mut any_nondiv = false;
+        let mut has_fallthrough = true;
         let mut next_lbl = self.fresh_lbl("arm");
         self.out_str(&format!("  br label %{}\n", next_lbl));
-        for arm in arms.iter() {
+
+        for arm in arms {
+            if !has_fallthrough {
+                break;
+            }
+            self.out_str(&format!("{}:\n", next_lbl));
             match &arm.pattern {
                 Pattern::Wild | Pattern::Bind(_) => {
-                    self.out_str(&format!("{}:\n", next_lbl));
-                    let bind = if let Pattern::Bind(n) = &arm.pattern {
-                        let s = self.slot(n, "i64");
-                        self.out_str(&format!("  store i64 {}, ptr {}\n", sv, s));
-                        self.scope.push((n.clone(), s, Type::I64));
-                        Some(())
+                    let bound = if let Pattern::Bind(name) = &arm.pattern {
+                        let slot = self.slot(name, &sty);
+                        self.out_str(&format!("  store {} {}, ptr {}\n", sty, sv, slot));
+                        self.scope.push((name.clone(), slot, scrut_ty.clone()));
+                        true
                     } else {
-                        None
+                        false
                     };
-                    let (v, vty, div) = self.lower_expr(&arm.body);
-                    if bind.is_some() {
+                    let (value, value_ty, diverged) = self.lower_expr(&arm.body);
+                    if bound {
                         self.scope.pop();
                     }
-                    if !div {
-                        self.out_str(&format!("  store {} {}, ptr {}\n", vty, v.unwrap(), res));
-                        self.out_str(&format!("  br label %{}\n", cont_lbl));
+                    if !diverged {
+                        self.out_str(&format!(
+                            "  store {} {}, ptr {}\n  br label %{}\n",
+                            value_ty,
+                            value.unwrap(),
+                            res,
+                            cont_lbl
+                        ));
                         any_nondiv = true;
                     }
+                    has_fallthrough = false;
                 }
-                Pattern::Lit(l) => {
-                    let litval = match l {
-                        Lit::I64(n) => n.to_string(),
-                        Lit::Bool(b) => (if *b { 1 } else { 0 }).to_string(),
-                        _ => {
-                            self.err("non-i64/bool match literal");
-                            "0".into()
+                Pattern::Lit(lit) => {
+                    let cond = match lit {
+                        Lit::I64(value) => {
+                            if sty != "i64" {
+                                self.err("i64 match literal used with non-i64 scrutinee");
+                            }
+                            let cond = self.fresh();
+                            self.out_str(&format!("  {} = icmp eq i64 {}, {}\n", cond, sv, value));
+                            cond
+                        }
+                        Lit::Bool(value) => {
+                            if sty != "i64" {
+                                self.err("bool match literal used with non-bool scrutinee");
+                            }
+                            let cond = self.fresh();
+                            self.out_str(&format!(
+                                "  {} = icmp eq i64 {}, {}\n",
+                                cond,
+                                sv,
+                                if *value { 1 } else { 0 }
+                            ));
+                            cond
+                        }
+                        Lit::Str(value) => {
+                            if sty != "ptr" {
+                                self.err("str match literal used with non-str scrutinee");
+                            }
+                            let literal = self.str_literal(value);
+                            let equal = self.fresh();
+                            self.out_str(&format!(
+                                "  {} = call i64 @aury_str_eq(ptr {}, ptr {})\n",
+                                equal, sv, literal
+                            ));
+                            let cond = self.fresh();
+                            self.out_str(&format!("  {} = icmp ne i64 {}, 0\n", cond, equal));
+                            cond
+                        }
+                        Lit::Unit => {
+                            if sty != "i64" {
+                                self.err("unit match literal used with non-unit scrutinee");
+                            }
+                            let cond = self.fresh();
+                            self.out_str(&format!("  {} = icmp eq i64 {}, 0\n", cond, sv));
+                            cond
                         }
                     };
-                    self.out_str(&format!("{}:\n", next_lbl));
-                    let c = self.fresh();
-                    self.out_str(&format!("  {} = icmp eq i64 {}, {}\n", c, sv, litval));
                     let this_arm = self.fresh_lbl("arm");
-                    let nxt = self.fresh_lbl("arm");
-                    self.out_str(&format!("  br i1 {}, label %{}, label %{}\n", c, this_arm, nxt));
-                    self.out_str(&format!("{}:\n", this_arm));
-                    let (v, vty, div) = self.lower_expr(&arm.body);
-                    if !div {
-                        self.out_str(&format!("  store {} {}, ptr {}\n", vty, v.unwrap(), res));
-                        self.out_str(&format!("  br label %{}\n", cont_lbl));
+                    let following = self.fresh_lbl("arm");
+                    self.out_str(&format!(
+                        "  br i1 {}, label %{}, label %{}\n{}:\n",
+                        cond, this_arm, following, this_arm
+                    ));
+                    let (value, value_ty, diverged) = self.lower_expr(&arm.body);
+                    if !diverged {
+                        self.out_str(&format!(
+                            "  store {} {}, ptr {}\n  br label %{}\n",
+                            value_ty,
+                            value.unwrap(),
+                            res,
+                            cont_lbl
+                        ));
                         any_nondiv = true;
                     }
-                    next_lbl = nxt;
+                    next_lbl = following;
                 }
             }
         }
+
+        if has_fallthrough {
+            self.out_str(&format!(
+                "{}:\n  call void @llvm.trap()\n  unreachable\n",
+                next_lbl
+            ));
+        }
         if !any_nondiv {
-            self.out_str(&format!("{}:\n  call void @llvm.trap()\n  unreachable\n", next_lbl));
             return (None, String::new(), true);
         }
         self.out_str(&format!("{}:\n", cont_lbl));
-        let r = self.fresh();
-        self.out_str(&format!("  {} = load {}, ptr {}\n", r, rty, res));
-        (Some(r), rty, false)
+        let value = self.fresh();
+        self.out_str(&format!("  {} = load {}, ptr {}\n", value, rty, res));
+        (Some(value), rty, false)
     }
 
     fn lower_loop(&mut self, body: &Expr) -> (Option<String>, String, bool) {
@@ -825,11 +930,26 @@ impl Lowerer {
                 self.infer_env(body, &e2)
             }
             Expr::Call { op, .. } => self.builtin_ret(op),
-            Expr::If { then, .. } => self.infer_env(then, env),
-            Expr::Match { arms, .. } => arms
-                .first()
-                .map(|a| self.infer_env(&a.body, env))
-                .unwrap_or(Type::Unit),
+            Expr::If { then, els, .. } => {
+                if Self::expr_diverges(then) {
+                    self.infer_env(els, env)
+                } else {
+                    self.infer_env(then, env)
+                }
+            }
+            Expr::Match { scrut, arms, .. } => {
+                let scrut_ty = self.infer_env(scrut, env);
+                arms.iter()
+                    .find(|arm| !Self::expr_diverges(&arm.body))
+                    .map(|arm| {
+                        let mut arm_env = env.to_vec();
+                        if let Pattern::Bind(name) = &arm.pattern {
+                            arm_env.push((name.clone(), scrut_ty.clone()));
+                        }
+                        self.infer_env(&arm.body, &arm_env)
+                    })
+                    .unwrap_or(Type::Unit)
+            }
             Expr::Loop { .. } | Expr::Return { .. } => Type::Unit,
             Expr::Block { tail, .. } => self.infer_env(tail, env),
             Expr::Region { body, .. } => self.infer_env(body, env),
@@ -845,6 +965,41 @@ impl Lowerer {
             Expr::Field { .. } => Type::I64, // best-effort; full struct-field typing needs defs
         }
     }
+    fn infer_match_type(&self, arms: &[MatchArm], scrut_ty: &Type) -> Type {
+        let base_env: Vec<(String, Type)> = self
+            .scope
+            .iter()
+            .map(|(name, _, ty)| (name.clone(), ty.clone()))
+            .collect();
+        arms.iter()
+            .find(|arm| !Self::expr_diverges(&arm.body))
+            .map(|arm| {
+                let mut env = base_env;
+                if let Pattern::Bind(name) = &arm.pattern {
+                    env.push((name.clone(), scrut_ty.clone()));
+                }
+                self.infer_env(&arm.body, &env)
+            })
+            .unwrap_or(Type::Unit)
+    }
+
+    /// Match the validator's divergence rule when choosing a control-flow
+    /// expression's normal result type.
+    fn expr_diverges(expr: &Expr) -> bool {
+        match expr {
+            Expr::Return { .. } | Expr::Loop { .. } => true,
+            Expr::Block { tail, .. } => Self::expr_diverges(tail),
+            Expr::If { then, els, .. } => {
+                Self::expr_diverges(then) && Self::expr_diverges(els)
+            }
+            Expr::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| Self::expr_diverges(&arm.body))
+            }
+            Expr::Let { body, .. } | Expr::Region { body, .. } => Self::expr_diverges(body),
+            _ => false,
+        }
+    }
+
     /// Return type of a builtin op (mirrors the validator's builtin table).
     fn builtin_ret(&self, op: &str) -> Type {
         match op {

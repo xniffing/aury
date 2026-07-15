@@ -1,0 +1,27 @@
+{
+  "kind": "module",
+  "name": "strdemo",
+  "items": [
+    { "kind": "fn", "name": "greet", "params": [{"name":"n","type":"i64"}], "ret": "str",
+      "body": { "kind": "call", "op": "str.concat",
+        "args": [ {"kind":"call","op":"i64.to_str","args":[{"kind":"ref","name":"n"}]},
+                  {"kind":"lit","value":"!"} ] } },
+    { "kind": "fn", "name": "parse-double", "params": [{"name":"s","type":"str"}], "ret": "i64",
+      "body": { "kind": "call", "op": "i64.mul",
+        "args": [ {"kind":"cast","type":"i64","value":{"kind":"ref","name":"s"}}, {"kind":"lit","value":2} ] } },
+    { "kind": "fn", "name": "concat3", "params": [{"name":"a","type":"str"},{"name":"b","type":"str"},{"name":"c","type":"str"}], "ret": "str",
+      "body": { "kind":"call","op":"str.concat",
+        "args": [ {"kind":"call","op":"str.concat","args":[{"kind":"ref","name":"a"},{"kind":"ref","name":"b"}]},
+                  {"kind":"ref","name":"c"} ] } },
+    { "kind": "fn", "name": "is-yes", "params": [{"name":"s","type":"str"}], "ret": "bool",
+      "body": { "kind":"call","op":"str.eq",
+        "args": [ {"kind":"ref","name":"s"}, {"kind":"lit","value":"yes"} ] } },
+    { "kind": "fn", "name": "length", "params": [{"name":"s","type":"str"}], "ret": "i64",
+      "body": { "kind":"call","op":"str.len","args":[{"kind":"ref","name":"s"}] } },
+    { "kind": "fn", "name": "describe", "params": [{"name":"n","type":"i64"}], "ret": "str",
+      "body": { "kind": "if",
+        "cond": {"kind":"call","op":"i64.gt","args":[{"kind":"ref","name":"n"},{"kind":"lit","value":0}]},
+        "then": {"kind":"call","op":"str.concat","args":[{"kind":"lit","value":"pos:"},{"kind":"call","op":"i64.to_str","args":[{"kind":"ref","name":"n"}]}]},
+        "else": {"kind":"lit","value":"nonpos"} } }
+  ]
+}

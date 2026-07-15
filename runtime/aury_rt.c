@@ -10,6 +10,9 @@
 // the process is short-lived). Region-based arenas (the proposal's actual
 // memory model) are the planned next step.
 
+#include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,19 +55,76 @@ aury_str aury_i64_to_str(int64_t n) {
     return r;
 }
 
-aury_result aury_i64_parse(aury_str s) {
-    aury_result r = (aury_result)malloc(sizeof(aury_result_t));
-    const char* d = s->data;
-    int64_t n = 0; int i = 0; int neg = 0; int any = 0;
-    if (d[0] == '-') { neg = 1; i = 1; } else if (d[0] == '+') { i = 1; }
-    for (; i < s->len; i++) {
-        if (d[i] < '0' || d[i] > '9') break;
-        n = n * 10 + (d[i] - '0');
-        any = 1;
+static aury_str make_string(const char* data, int64_t len) {
+    char* copy = (char*)malloc((size_t)len + 1);
+    memcpy(copy, data, (size_t)len);
+    copy[len] = 0;
+    aury_str result = (aury_str)malloc(sizeof(aury_str_t));
+    result->len = len;
+    result->data = copy;
+    return result;
+}
+
+static aury_result parse_i64(aury_str s, int trim) {
+    int64_t start = 0;
+    int64_t end = s->len;
+    if (trim) {
+        while (start < end && isspace((unsigned char)s->data[start])) start++;
+        while (end > start && isspace((unsigned char)s->data[end - 1])) end--;
     }
-    if (neg) n = -n;
-    r->ok = any ? 1 : 0;
-    r->val = any ? n : 0;
-    r->err = 0;
-    return r;
+
+    int64_t len = end - start;
+    char* text = (char*)malloc((size_t)len + 1);
+    memcpy(text, s->data + start, (size_t)len);
+    text[len] = 0;
+
+    errno = 0;
+    char* parsed_end = text;
+    intmax_t parsed = strtoimax(text, &parsed_end, 10);
+    int valid = len > 0
+        && (trim || !isspace((unsigned char)text[0]))
+        && parsed_end == text + len
+        && errno != ERANGE
+        && parsed >= INT64_MIN
+        && parsed <= INT64_MAX;
+    free(text);
+
+    aury_result result = (aury_result)malloc(sizeof(aury_result_t));
+    result->ok = valid ? 1 : 0;
+    result->val = valid ? (int64_t)parsed : 0;
+    result->err = valid ? NULL : make_string("not an i64", 10);
+    return result;
+}
+
+/* `i64.parse` trims like Rust's `str::trim().parse::<i64>()`. */
+aury_result aury_i64_parse(aury_str s) {
+    return parse_i64(s, 1);
+}
+
+/* Casts use strict `str::parse::<i64>()` semantics (no surrounding space). */
+aury_result aury_i64_parse_strict(aury_str s) {
+    return parse_i64(s, 0);
+}
+
+/* Print using the interpreter's string Debug representation, including quotes. */
+void aury_str_print(aury_str s) {
+    putchar('"');
+    for (int64_t i = 0; i < s->len; i++) {
+        unsigned char byte = (unsigned char)s->data[i];
+        switch (byte) {
+            case 0: fputs("\\0", stdout); break;
+            case '\t': fputs("\\t", stdout); break;
+            case '\n': fputs("\\n", stdout); break;
+            case '\r': fputs("\\r", stdout); break;
+            case '\\': fputs("\\\\", stdout); break;
+            case '"': fputs("\\\"", stdout); break;
+            default:
+                if (byte < 0x20 || byte == 0x7f) {
+                    fprintf(stdout, "\\u{%x}", byte);
+                } else {
+                    putchar(byte);
+                }
+        }
+    }
+    fputs("\"\n", stdout);
 }

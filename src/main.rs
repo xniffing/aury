@@ -2,7 +2,7 @@
 
 use aury::repair::ValidationOutcome;
 use aury::validate::check_module;
-use aury::{ast::build_module, interp::Interp, lower::lower_to_mlir_sketch, sexpr::parse};
+use aury::{ast::build_module, interp::Interp, lower_sketch::lower_to_mlir_sketch, sexpr::parse};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
@@ -125,10 +125,7 @@ fn cmd_run(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::from(1));
     }
     let mut interp = Interp::new(&m, 0xC0FFEE);
-    let mut vals = Vec::new();
-    for a in arg_strs {
-        vals.push(parse_arg(a)?);
-    }
+    let vals = parse_fn_args(&m, fn_name, arg_strs)?;
     match interp.call_fn(fn_name, vals) {
         Ok(v) => {
             println!("{}", show_value(&v));
@@ -246,12 +243,17 @@ fn cmd_compile(args: &[String]) -> Result<ExitCode, String> {
     let positional: Vec<&String> = args
         .iter()
         .enumerate()
-        .filter(|(i, a)| {
-            !excluded.contains(i) && !a.starts_with("--") && !(a.as_str() == "-o")
-        })
+        .filter(|(i, a)| !excluded.contains(i) && a.as_str() != "-o")
         .map(|(_, a)| a)
         .collect();
-    let out = o_idx.and_then(|i| args.get(i + 1)).cloned();
+    let out = match o_idx {
+        Some(i) => Some(
+            args.get(i + 1)
+                .cloned()
+                .ok_or("compile: -o requires an output path")?,
+        ),
+        None => None,
+    };
     let path = positional.first().ok_or("compile <file> <fn> [args...] [-o out]")?;
     let entry = positional.get(1).ok_or("compile <file> <fn> [args...]")?;
     let arg_strs = if positional.len() >= 3 {
@@ -267,14 +269,8 @@ fn cmd_compile(args: &[String]) -> Result<ExitCode, String> {
         }
         return Ok(ExitCode::from(1));
     }
-    let mut iargs: Vec<i64> = Vec::new();
-    for a in arg_strs {
-        iargs.push(
-            a.parse::<i64>()
-                .map_err(|_| format!("compile: arg `{}` is not an i64", a))?,
-        );
-    }
-    let ir = aury::lower::lower_program_with_main(&m, entry, &iargs)?;
+    let raw_args: Vec<String> = arg_strs.iter().map(|arg| (*arg).clone()).collect();
+    let ir = aury::lower::lower_program_with_main(&m, entry, &raw_args)?;
     let ll = std::env::temp_dir().join(format!("aury_{}.ll", entry));
     std::fs::write(&ll, &ir).map_err(|e| format!("write ll: {}", e))?;
     let exe = out.unwrap_or_else(|| {
@@ -291,7 +287,7 @@ fn cmd_compile(args: &[String]) -> Result<ExitCode, String> {
         .arg("-o")
         .arg(&exe)
         .output()
-        .map_err(|e| format!("clang: {} (is clang installed?)", e))?;;
+        .map_err(|e| format!("clang: {} (is clang installed?)", e))?;
     if !status.status.success() {
         eprintln!("clang failed:\n{}", String::from_utf8_lossy(&status.stderr));
         eprintln!("IR written to {:?}", ll);
@@ -366,18 +362,53 @@ fn cmd_emit_json(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn parse_arg(a: &str) -> Result<aury::interp::Value, String> {
-    match a {
-        "true" => Ok(aury::interp::Value::Bool(true)),
-        "false" => Ok(aury::interp::Value::Bool(false)),
-        _ => {
-            if let Ok(n) = a.parse::<i64>() {
-                Ok(aury::interp::Value::I64(n))
-            } else {
-                Ok(aury::interp::Value::Str(a.to_string()))
-            }
-        }
+fn parse_fn_args(
+    module: &aury::ast::Module,
+    fn_name: &str,
+    args: &[String],
+) -> Result<Vec<aury::interp::Value>, String> {
+    use aury::ast::ModuleItem;
+    use aury::interp::Value;
+    use aury::types::Type;
+
+    let function = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ModuleItem::Fn(function) if function.name == fn_name => Some(function),
+            _ => None,
+        })
+        .ok_or_else(|| format!("fn not found: {}", fn_name))?;
+    if function.params.len() != args.len() {
+        return Err(format!(
+            "fn {} takes {} args, got {}",
+            fn_name,
+            function.params.len(),
+            args.len()
+        ));
     }
+
+    function
+        .params
+        .iter()
+        .zip(args)
+        .map(|(param, arg)| match param.ty {
+            Type::I64 => arg
+                .parse::<i64>()
+                .map(Value::I64)
+                .map_err(|_| format!("arg `{}` for `{}` is not an i64", arg, param.name)),
+            Type::Bool => match arg.as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                _ => Err(format!("arg `{}` for `{}` is not a bool", arg, param.name)),
+            },
+            Type::Str => Ok(Value::Str(arg.clone())),
+            _ => Err(format!(
+                "CLI arguments of type {:?} are not supported for `{}`",
+                param.ty, param.name
+            )),
+        })
+        .collect()
 }
 
 fn show_value(v: &aury::interp::Value) -> String {

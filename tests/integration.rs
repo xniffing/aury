@@ -279,7 +279,8 @@ fn native_lowering_matches_interpreter_for_numeric_core() {
     let xs = parse(&src).unwrap();
     let m = build_module(&xs[0]).unwrap();
     // lower the reachable set from gcd (i64/bool core only)
-    let ir = aury::lower::lower_program_with_main(&m, "gcd", &[1071, 462]).unwrap();
+    let args = vec!["1071".to_string(), "462".to_string()];
+    let ir = aury::lower::lower_program_with_main(&m, "gcd", &args).unwrap();
     assert!(ir.contains("define i64 @aury__gcd"));
     assert!(ir.contains("define i32 @main"));
     // vec/struct fns in math must NOT appear (they're outside the reachable set)
@@ -299,5 +300,83 @@ fn native_lowering_matches_interpreter_for_numeric_core() {
         let native = String::from_utf8_lossy(&out.stdout).trim().to_string();
         // gcd(1071,462) = 21
         assert_eq!(native, "21", "native output must equal interpreter (21)");
+    }
+}
+
+#[test]
+fn native_lowering_supports_str_result_and_typed_control_flow() {
+    // Authored through Aury's typed-object JSON surface. This exercises boxed
+    // string params/results, result.is_ok, bool params, string-valued if, and
+    // a string match whose bind must retain the scrutinee type.
+    let json = r#"{
+      "kind":"module",
+      "name":"native_str",
+      "items":[
+        {"kind":"fn","name":"describe","params":[{"name":"n","type":"i64"}],"ret":"str",
+         "body":{"kind":"if",
+           "cond":{"kind":"call","op":"i64.gt","args":[{"kind":"ref","name":"n"},{"kind":"lit","value":0}]},
+           "then":{"kind":"call","op":"str.concat","args":[{"kind":"lit","value":"pos:"},{"kind":"call","op":"i64.to_str","args":[{"kind":"ref","name":"n"}]}]},
+           "else":{"kind":"lit","value":"nonpos"}}},
+        {"kind":"fn","name":"is-int","params":[{"name":"s","type":"str"}],"ret":"bool",
+         "body":{"kind":"call","op":"result.is_ok","args":[{"kind":"call","op":"i64.parse","args":[{"kind":"ref","name":"s"}]}]}},
+        {"kind":"fn","name":"invert","params":[{"name":"b","type":"bool"}],"ret":"bool",
+         "body":{"kind":"call","op":"bool.not","args":[{"kind":"ref","name":"b"}]}},
+        {"kind":"fn","name":"early","params":[{"name":"n","type":"i64"}],"ret":"str",
+         "body":{"kind":"if",
+           "cond":{"kind":"call","op":"i64.gt","args":[{"kind":"ref","name":"n"},{"kind":"lit","value":0}]},
+           "then":{"kind":"return","value":{"kind":"lit","value":"early"}},
+           "else":{"kind":"lit","value":"late"}}},
+        {"kind":"fn","name":"echo-match","params":[{"name":"s","type":"str"}],"ret":"str",
+         "body":{"kind":"match","scrut":{"kind":"ref","name":"s"},"arms":[
+           {"pattern":{"kind":"lit","value":"yes"},"body":{"kind":"lit","value":"Y"}},
+           {"pattern":{"kind":"bind","name":"x"},"body":{"kind":"call","op":"str.concat","args":[{"kind":"ref","name":"x"},{"kind":"lit","value":"!"}]}}
+         ]}}
+      ]
+    }"#;
+    let m = aury::json::build_module_from_json(json).expect("build JSON module");
+    assert!(check_module(&m).is_accepted());
+
+    let cases: Vec<(&str, Vec<String>, String)> = vec![
+        ("describe", vec!["5".into()], "\"pos:5\"\n".into()),
+        ("describe", vec!["-3".into()], "\"nonpos\"\n".into()),
+        ("is-int", vec!["12x".into()], "false\n".into()),
+        ("is-int", vec![" 42 ".into()], "true\n".into()),
+        ("is-int", vec!["9223372036854775808".into()], "false\n".into()),
+        ("invert", vec!["true".into()], "false\n".into()),
+        ("early", vec!["1".into()], "\"early\"\n".into()),
+        ("early", vec!["0".into()], "\"late\"\n".into()),
+        ("echo-match", vec!["yes".into()], "\"Y\"\n".into()),
+        (
+            "echo-match",
+            vec!["a\"\\\n".into()],
+            format!("{:?}\n", "a\"\\\n!"),
+        ),
+        ("echo-match", vec!["--help".into()], "\"--help!\"\n".into()),
+    ];
+
+    for (index, (entry, args, expected)) in cases.into_iter().enumerate() {
+        let ir = aury::lower::lower_program_with_main(&m, entry, &args).unwrap();
+        assert!(ir.contains("private constant"));
+        if std::process::Command::new("clang").arg("--version").output().is_err() {
+            continue;
+        }
+        let ll = std::env::temp_dir().join(format!("aury_native_str_{}.ll", index));
+        let exe = std::env::temp_dir().join(format!("aury_native_str_{}.exe", index));
+        std::fs::write(&ll, &ir).unwrap();
+        let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
+        let clang = std::process::Command::new("clang")
+            .args(["-O2", ll.to_str().unwrap(), &runtime, "-o", exe.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            clang.status.success(),
+            "clang failed for {}:\n{}\n{}",
+            entry,
+            String::from_utf8_lossy(&clang.stderr),
+            ir
+        );
+        let output = std::process::Command::new(&exe).output().unwrap();
+        assert!(output.status.success(), "native {} failed", entry);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{}", entry);
     }
 }

@@ -17,7 +17,8 @@
 //! - [`validate`]: the type/effect/region checker, emitting rejections.
 //! - [`spec`]: contracts, property tests, vacuity check, shrinking.
 //! - [`interp`]: tree-walking interpreter (v0 execution backend).
-//! - [`lower`]: MLIR lowering *sketch* (real MLIR/LLVM is the swappable backend).
+//! - [`lower`]: type-aware LLVM IR lowering for the native-supported subset.
+//! - [`lower_sketch`]: structural MLIR preview retained for `aury lower`.
 //! - [`loop_driver`]: the closed repair loop.
 
 pub mod ast;
