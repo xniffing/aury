@@ -1,0 +1,15 @@
+; Aury v0 example: effects and capabilities.
+; `rand-sum` declares the `rng` capability in its effect row. Calling a
+; function with the `rng` effect from a function that doesn't declare `rng`
+; would be rejected by the effect checker (CALL_EFFECT_EXCEEDS_DECLARED).
+
+(module rng-demo
+  (fn rand-sum
+    (params (a i64) (b i64))
+    (ret i64)
+    (effects (rng))
+    (body
+      (call i64.add
+        (call i64.add (ref a) (ref b))
+        (call rng.next))))
+)

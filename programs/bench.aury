@@ -1,0 +1,1 @@
+(module bench (fn tree (params (n i64)) (ret i64) (body (if (call i64.eq (ref n) 0) (then 1) (else (call i64.add (call tree (call i64.sub (ref n) 1)) (call tree (call i64.sub (ref n) 1))))))))

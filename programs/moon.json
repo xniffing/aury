@@ -1,0 +1,1218 @@
+{
+  "kind": "module",
+  "name": "moon",
+  "items": [
+    {
+      "kind": "spec",
+      "properties": [
+        {
+          "name": "distance-in-range",
+          "forall": [
+            {
+              "name": "x",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "let",
+            "name": "t",
+            "type": "i64",
+            "init": {
+              "kind": "call",
+              "op": "i64.mul",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "x"
+                },
+                62832
+              ]
+            },
+            "body": {
+              "kind": "let",
+              "name": "d",
+              "type": "i64",
+              "init": {
+                "kind": "call",
+                "op": "distance-at",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "t"
+                  }
+                ]
+              },
+              "body": {
+                "kind": "let",
+                "name": "lo",
+                "type": "i64",
+                "init": {
+                  "kind": "call",
+                  "op": "i64.sub",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "perigee",
+                      "args": []
+                    },
+                    20000
+                  ]
+                },
+                "body": {
+                  "kind": "let",
+                  "name": "hi",
+                  "type": "i64",
+                  "init": {
+                    "kind": "call",
+                    "op": "i64.add",
+                    "args": [
+                      {
+                        "kind": "call",
+                        "op": "apogee",
+                        "args": []
+                      },
+                      20000
+                    ]
+                  },
+                  "body": {
+                    "kind": "call",
+                    "op": "bool.and",
+                    "args": [
+                      {
+                        "kind": "call",
+                        "op": "i64.le",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "lo"
+                          },
+                          {
+                            "kind": "ref",
+                            "name": "d"
+                          }
+                        ]
+                      },
+                      {
+                        "kind": "call",
+                        "op": "i64.le",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "d"
+                          },
+                          {
+                            "kind": "ref",
+                            "name": "hi"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "distance-at-zero-is-perigee",
+          "forall": [
+            {
+              "name": "x",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "i64.ge",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "x"
+                },
+                0
+              ]
+            },
+            "then": {
+              "kind": "call",
+              "op": "i64.le",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.abs",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "i64.sub",
+                      "args": [
+                        {
+                          "kind": "call",
+                          "op": "distance-at",
+                          "args": [
+                            0
+                          ]
+                        },
+                        {
+                          "kind": "call",
+                          "op": "perigee",
+                          "args": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                500
+              ]
+            },
+            "else": {
+              "kind": "lit",
+              "value": true
+            }
+          }
+        },
+        {
+          "name": "distance-at-pi-is-apogee",
+          "forall": [
+            {
+              "name": "x",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "i64.ge",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "x"
+                },
+                0
+              ]
+            },
+            "then": {
+              "kind": "call",
+              "op": "i64.le",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.abs",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "i64.sub",
+                      "args": [
+                        {
+                          "kind": "call",
+                          "op": "distance-at",
+                          "args": [
+                            3141593
+                          ]
+                        },
+                        {
+                          "kind": "call",
+                          "op": "apogee",
+                          "args": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                500
+              ]
+            },
+            "else": {
+              "kind": "lit",
+              "value": true
+            }
+          }
+        },
+        {
+          "name": "cos-bounded",
+          "forall": [
+            {
+              "name": "x",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.le",
+            "args": [
+              {
+                "kind": "call",
+                "op": "i64.abs",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "cos-fixed",
+                    "args": [
+                      {
+                        "kind": "call",
+                        "op": "i64.mul",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "x"
+                          },
+                          62832
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "kind": "call",
+                "op": "i64.add",
+                "args": [
+                  1000000,
+                  2000
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "cos-even",
+          "forall": [
+            {
+              "name": "x",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "let",
+            "name": "t",
+            "type": "i64",
+            "init": {
+              "kind": "call",
+              "op": "i64.mul",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "x"
+                },
+                1000
+              ]
+            },
+            "body": {
+              "kind": "call",
+              "op": "i64.le",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.abs",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "i64.sub",
+                      "args": [
+                        {
+                          "kind": "call",
+                          "op": "cos-fixed",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "t"
+                            }
+                          ]
+                        },
+                        {
+                          "kind": "call",
+                          "op": "cos-fixed",
+                          "args": [
+                            {
+                              "kind": "call",
+                              "op": "i64.neg",
+                              "args": [
+                                {
+                                  "kind": "ref",
+                                  "name": "t"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                2000
+              ]
+            }
+          }
+        },
+        {
+          "name": "perigee-lt-apogee",
+          "forall": [
+            {
+              "name": "x",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.lt",
+            "args": [
+              {
+                "kind": "call",
+                "op": "perigee",
+                "args": []
+              },
+              {
+                "kind": "call",
+                "op": "apogee",
+                "args": []
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "kind": "fn",
+      "name": "perigee",
+      "params": [],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mul",
+            "args": [
+              382320000,
+              {
+                "kind": "call",
+                "op": "i64.sub",
+                "args": [
+                  1000000,
+                  60719
+                ]
+              }
+            ]
+          },
+          1000000
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "apogee",
+      "params": [],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mul",
+            "args": [
+              382320000,
+              {
+                "kind": "call",
+                "op": "i64.add",
+                "args": [
+                  1000000,
+                  60719
+                ]
+              }
+            ]
+          },
+          1000000
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "mean",
+      "params": [],
+      "ret": "i64",
+      "body": 382320000
+    },
+    {
+      "kind": "fn",
+      "name": "perigee-km",
+      "params": [],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "perigee",
+            "args": []
+          },
+          1000
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "apogee-km",
+      "params": [],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "apogee",
+            "args": []
+          },
+          1000
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "mean-km",
+      "params": [],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "mean",
+            "args": []
+          },
+          1000
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "cos-taylor",
+      "params": [
+        {
+          "name": "x",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "taylor-step",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.div",
+            "args": [
+              {
+                "kind": "call",
+                "op": "i64.mul",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "x"
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "x"
+                  }
+                ]
+              },
+              1000000
+            ]
+          },
+          1000000,
+          1000000,
+          1
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "taylor-step",
+      "params": [
+        {
+          "name": "x2",
+          "type": "i64"
+        },
+        {
+          "name": "term",
+          "type": "i64"
+        },
+        {
+          "name": "res",
+          "type": "i64"
+        },
+        {
+          "name": "k",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.gt",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "k"
+            },
+            12
+          ]
+        },
+        "then": {
+          "kind": "ref",
+          "name": "res"
+        },
+        "else": {
+          "kind": "call",
+          "op": "taylor-step",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "x2"
+            },
+            {
+              "kind": "call",
+              "op": "i64.div",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.mul",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "i64.neg",
+                      "args": [
+                        {
+                          "kind": "ref",
+                          "name": "term"
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "ref",
+                      "name": "x2"
+                    }
+                  ]
+                },
+                {
+                  "kind": "call",
+                  "op": "i64.mul",
+                  "args": [
+                    1000000,
+                    {
+                      "kind": "call",
+                      "op": "i64.mul",
+                      "args": [
+                        {
+                          "kind": "call",
+                          "op": "i64.mul",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "k"
+                            },
+                            2
+                          ]
+                        },
+                        {
+                          "kind": "call",
+                          "op": "i64.sub",
+                          "args": [
+                            {
+                              "kind": "call",
+                              "op": "i64.mul",
+                              "args": [
+                                {
+                                  "kind": "ref",
+                                  "name": "k"
+                                },
+                                2
+                              ]
+                            },
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "kind": "call",
+              "op": "i64.add",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "res"
+                },
+                {
+                  "kind": "call",
+                  "op": "i64.div",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "i64.mul",
+                      "args": [
+                        {
+                          "kind": "call",
+                          "op": "i64.neg",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "term"
+                            }
+                          ]
+                        },
+                        {
+                          "kind": "ref",
+                          "name": "x2"
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "call",
+                      "op": "i64.mul",
+                      "args": [
+                        1000000,
+                        {
+                          "kind": "call",
+                          "op": "i64.mul",
+                          "args": [
+                            {
+                              "kind": "call",
+                              "op": "i64.mul",
+                              "args": [
+                                {
+                                  "kind": "ref",
+                                  "name": "k"
+                                },
+                                2
+                              ]
+                            },
+                            {
+                              "kind": "call",
+                              "op": "i64.sub",
+                              "args": [
+                                {
+                                  "kind": "call",
+                                  "op": "i64.mul",
+                                  "args": [
+                                    {
+                                      "kind": "ref",
+                                      "name": "k"
+                                    },
+                                    2
+                                  ]
+                                },
+                                1
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "kind": "call",
+              "op": "i64.add",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "k"
+                },
+                1
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "reduce-tau",
+      "params": [
+        {
+          "name": "x",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.ge",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "x"
+            },
+            6283185
+          ]
+        },
+        "then": {
+          "kind": "call",
+          "op": "reduce-tau",
+          "args": [
+            {
+              "kind": "call",
+              "op": "i64.sub",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "x"
+                },
+                6283185
+              ]
+            }
+          ]
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.lt",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "x"
+              },
+              0
+            ]
+          },
+          "then": {
+            "kind": "call",
+            "op": "reduce-tau",
+            "args": [
+              {
+                "kind": "call",
+                "op": "i64.add",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "x"
+                  },
+                  6283185
+                ]
+              }
+            ]
+          },
+          "else": {
+            "kind": "ref",
+            "name": "x"
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "cos-fixed",
+      "params": [
+        {
+          "name": "x",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.mul",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mul",
+            "args": [
+              {
+                "kind": "call",
+                "op": "cos-taylor",
+                "args": [
+                  {
+                    "kind": "if",
+                    "cond": {
+                      "kind": "call",
+                      "op": "i64.gt",
+                      "args": [
+                        {
+                          "kind": "if",
+                          "cond": {
+                            "kind": "call",
+                            "op": "i64.gt",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "reduce-tau",
+                                "args": [
+                                  {
+                                    "kind": "ref",
+                                    "name": "x"
+                                  }
+                                ]
+                              },
+                              3141593
+                            ]
+                          },
+                          "then": {
+                            "kind": "call",
+                            "op": "i64.sub",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "reduce-tau",
+                                "args": [
+                                  {
+                                    "kind": "ref",
+                                    "name": "x"
+                                  }
+                                ]
+                              },
+                              3141593
+                            ]
+                          },
+                          "else": {
+                            "kind": "call",
+                            "op": "reduce-tau",
+                            "args": [
+                              {
+                                "kind": "ref",
+                                "name": "x"
+                              }
+                            ]
+                          }
+                        },
+                        1570796
+                      ]
+                    },
+                    "then": {
+                      "kind": "call",
+                      "op": "i64.sub",
+                      "args": [
+                        3141593,
+                        {
+                          "kind": "if",
+                          "cond": {
+                            "kind": "call",
+                            "op": "i64.gt",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "reduce-tau",
+                                "args": [
+                                  {
+                                    "kind": "ref",
+                                    "name": "x"
+                                  }
+                                ]
+                              },
+                              3141593
+                            ]
+                          },
+                          "then": {
+                            "kind": "call",
+                            "op": "i64.sub",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "reduce-tau",
+                                "args": [
+                                  {
+                                    "kind": "ref",
+                                    "name": "x"
+                                  }
+                                ]
+                              },
+                              3141593
+                            ]
+                          },
+                          "else": {
+                            "kind": "call",
+                            "op": "reduce-tau",
+                            "args": [
+                              {
+                                "kind": "ref",
+                                "name": "x"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    "else": {
+                      "kind": "if",
+                      "cond": {
+                        "kind": "call",
+                        "op": "i64.gt",
+                        "args": [
+                          {
+                            "kind": "call",
+                            "op": "reduce-tau",
+                            "args": [
+                              {
+                                "kind": "ref",
+                                "name": "x"
+                              }
+                            ]
+                          },
+                          3141593
+                        ]
+                      },
+                      "then": {
+                        "kind": "call",
+                        "op": "i64.sub",
+                        "args": [
+                          {
+                            "kind": "call",
+                            "op": "reduce-tau",
+                            "args": [
+                              {
+                                "kind": "ref",
+                                "name": "x"
+                              }
+                            ]
+                          },
+                          3141593
+                        ]
+                      },
+                      "else": {
+                        "kind": "call",
+                        "op": "reduce-tau",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "x"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "kind": "if",
+                "cond": {
+                  "kind": "call",
+                  "op": "i64.gt",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "reduce-tau",
+                      "args": [
+                        {
+                          "kind": "ref",
+                          "name": "x"
+                        }
+                      ]
+                    },
+                    3141593
+                  ]
+                },
+                "then": {
+                  "kind": "call",
+                  "op": "i64.neg",
+                  "args": [
+                    1
+                  ]
+                },
+                "else": 1
+              }
+            ]
+          },
+          {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "i64.gt",
+              "args": [
+                {
+                  "kind": "if",
+                  "cond": {
+                    "kind": "call",
+                    "op": "i64.gt",
+                    "args": [
+                      {
+                        "kind": "call",
+                        "op": "reduce-tau",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "x"
+                          }
+                        ]
+                      },
+                      3141593
+                    ]
+                  },
+                  "then": {
+                    "kind": "call",
+                    "op": "i64.sub",
+                    "args": [
+                      {
+                        "kind": "call",
+                        "op": "reduce-tau",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "x"
+                          }
+                        ]
+                      },
+                      3141593
+                    ]
+                  },
+                  "else": {
+                    "kind": "call",
+                    "op": "reduce-tau",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "x"
+                      }
+                    ]
+                  }
+                },
+                1570796
+              ]
+            },
+            "then": {
+              "kind": "call",
+              "op": "i64.neg",
+              "args": [
+                1
+              ]
+            },
+            "else": 1
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "distance-at",
+      "params": [
+        {
+          "name": "theta",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mul",
+            "args": [
+              {
+                "kind": "call",
+                "op": "i64.div",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "i64.mul",
+                    "args": [
+                      382320000,
+                      {
+                        "kind": "call",
+                        "op": "i64.sub",
+                        "args": [
+                          1000000,
+                          {
+                            "kind": "call",
+                            "op": "i64.div",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "i64.mul",
+                                "args": [
+                                  60719,
+                                  60719
+                                ]
+                              },
+                              1000000
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  1000000
+                ]
+              },
+              1000000
+            ]
+          },
+          {
+            "kind": "call",
+            "op": "i64.add",
+            "args": [
+              1000000,
+              {
+                "kind": "call",
+                "op": "i64.div",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "i64.mul",
+                    "args": [
+                      60719,
+                      {
+                        "kind": "call",
+                        "op": "cos-fixed",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "theta"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  1000000
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "distance-km",
+      "params": [
+        {
+          "name": "theta",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "distance-at",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "theta"
+              }
+            ]
+          },
+          1000
+        ]
+      }
+    }
+  ]
+}

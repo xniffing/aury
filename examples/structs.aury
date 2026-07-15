@@ -1,0 +1,17 @@
+; Aury v0 example: structs and field access.
+
+(module structs
+  (struct Point (x i64) (y i64))
+
+  (fn make
+    (params (x i64) (y i64))
+    (ret (struct Point))
+    (body
+      (new-struct Point (x (ref x)) (y (ref y)))))
+
+  (fn sum
+    (params (p (struct Point)))
+    (ret i64)
+    (body
+      (call i64.add (get (ref p) x) (get (ref p) y))))
+)

@@ -1,0 +1,21 @@
+[package]
+name = "aury"
+version = "0.1.0"
+edition = "2021"
+description = "Aury v0: s-expression IR with Merkle IDs, no-inference validation, repair protocol, intent verification"
+license = "MIT"
+
+[lib]
+name = "aury"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aury"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = "0.10"
+serde_json = "1"
+
+[profile.release]
+debug = true

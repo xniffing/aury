@@ -1,0 +1,20 @@
+; Aury v0 example: a property test catches a real bug, with shrinking.
+; `bad-max` is supposed to return the larger of a and b, but has the
+; comparison backwards. The property `max-at-least-a` fails; the harness
+; shrinks the counterexample to a minimal failing case (e.g. a=1, b=0).
+
+(module buggy-max
+  (spec
+    (property max-at-least-a
+      (forall ((a i64) (b i64))
+        (call i64.ge (call bad-max (ref a) (ref b)) (ref a)))))
+
+  (fn bad-max
+    (params (a i64) (b i64))
+    (ret i64)
+    ; BUG: returns the smaller, not the larger.
+    (body
+      (if (call i64.gt (ref a) (ref b))
+          (then (ref b))
+          (else (ref a)))))
+)

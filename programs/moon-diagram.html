@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+body{margin:0;background:#ffffff;font-family:ui-sans-serif,system-ui,Arial,sans-serif}
+</style></head><body>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 800" width="860" height="800" font-family="ui-sans-serif,system-ui,Arial,sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <marker id="arrw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f6feb"/>
+    </marker>
+  </defs>
+
+  <!-- ===== Title ===== -->
+  <text x="430" y="28" text-anchor="middle" font-size="20" font-weight="700" fill="#111">
+    Earth–Moon distance — how aury/moon computes it
+  </text>
+  <text x="430" y="50" text-anchor="middle" font-size="13" fill="#555">
+    elliptical orbit  d = a(1−e²)/(1 + e·cos θ)   ·   fixed-point i64 (scale S = 1,000,000)   ·   2026-07-15
+  </text>
+
+  <!-- ===== Panel 1: orbital geometry ===== -->
+  <rect x="16" y="64" width="828" height="396" rx="10" fill="#f7f9fc" stroke="#d0d7de"/>
+  <text x="30" y="86" font-size="14" font-weight="700" fill="#1f6feb">① Orbit geometry (eccentricity exaggerated ~6× for visibility; real e = 0.0607)</text>
+
+  <!-- ellipse: a_draw=260, e_draw=0.35 -> b=243, c=91 ; center (330,250) -->
+  <ellipse cx="330" cy="250" rx="260" ry="243" fill="none" stroke="#9aa7b5" stroke-width="2" stroke-dasharray="6 4"/>
+  <!-- major axis -->
+  <line x1="70" y1="250" x2="590" y2="250" stroke="#c9d1d9" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="330" y="244" text-anchor="middle" font-size="12" fill="#6e7681">semi-major axis  a = 382,320 km</text>
+
+  <!-- Earth at right focus (330+91, 250) = (421,250) -->
+  <circle cx="421" cy="250" r="13" fill="#1f6feb"/>
+  <text x="421" y="284" text-anchor="middle" font-size="13" font-weight="700" fill="#1f6feb">Earth</text>
+  <text x="421" y="300" text-anchor="middle" font-size="10" fill="#6e7681">(orbit focus)</text>
+
+  <!-- perigee (330+260,250)=(590,250) ; apogee (70,250) -->
+  <circle cx="590" cy="250" r="5" fill="#cf222e"/>
+  <text x="598" y="246" font-size="12" font-weight="700" fill="#cf222e">Perigee</text>
+  <text x="598" y="262" font-size="11" fill="#cf222e">359,105 km (closest)</text>
+  <circle cx="70" cy="250" r="5" fill="#1a7f37"/>
+  <text x="62" y="246" text-anchor="end" font-size="12" font-weight="700" fill="#1a7f37">Apogee</text>
+  <text x="62" y="262" text-anchor="end" font-size="11" fill="#1a7f37">405,534 km (farthest)</text>
+
+  <!-- Moon at θ=28° from perigee ; r_draw = 260*(1-.1225)/(1+.35*cos28)=161 -->
+  <!-- from focus (421,250): Moon = (421+161*cos28, 250-161*sin28) = (563, 174) -->
+  <line x1="421" y1="250" x2="563" y2="174" stroke="#bf8700" stroke-width="2.5"/>
+  <circle cx="563" cy="174" r="9" fill="#d0d7de" stroke="#57606a" stroke-width="2"/>
+  <text x="578" y="170" font-size="13" font-weight="700" fill="#24292f">Moon (now)</text>
+  <text x="578" y="186" font-size="11" fill="#57606a">true anomaly θ ≈ 28°</text>
+  <!-- distance label on the Earth-Moon line, midpoint ~ (492, 212) -->
+  <rect x="430" y="196" width="150" height="34" rx="6" fill="#fff5d1" stroke="#bf8700"/>
+  <text x="505" y="212" text-anchor="middle" font-size="12" font-weight="700" fill="#7d4f00">d = 368,836 km</text>
+  <text x="505" y="225" text-anchor="middle" font-size="10" fill="#7d4f00">(live ephemeris; model 361,528)</text>
+
+  <!-- true anomaly arc at Earth, radius 46, from +x to Moon direction -->
+  <path d="M 467 250 A 46 46 0 0 0 461.5 228.4" fill="none" stroke="#bf8700" stroke-width="2"/>
+  <text x="476" y="238" font-size="12" font-weight="700" fill="#7d4f00">θ</text>
+
+  <!-- legend -->
+  <g transform="translate(30,330)">
+    <rect x="0" y="0" width="470" height="118" rx="8" fill="#fff" stroke="#d0d7de"/>
+    <text x="12" y="20" font-size="12" font-weight="700" fill="#24292f">Reading the diagram</text>
+    <text x="12" y="40" font-size="11" fill="#57606a">• Earth sits at one focus of the ellipse; the Moon travels the dashed orbit.</text>
+    <text x="12" y="58" font-size="11" fill="#57606a">• θ is the true anomaly — the angle from perigee to the Moon's current spot.</text>
+    <text x="12" y="76" font-size="11" fill="#57606a">• d = a(1−e²)/(1+e·cos θ): at θ=0 → perigee; at θ=π → apogee; now θ≈28°.</text>
+    <text x="12" y="96" font-size="11" fill="#cf222e">• 2 days past perigee (Jul 13) → climbing toward apogee (Jul 25).</text>
+    <text x="12" y="112" font-size="11" fill="#6e7681">• model is exact at endpoints; ~2% low mid-orbit (solar perturbation / evection).</text>
+  </g>
+  <g transform="translate(510,330)">
+    <rect x="0" y="0" width="320" height="118" rx="8" fill="#fff" stroke="#d0d7de"/>
+    <text x="12" y="20" font-size="12" font-weight="700" fill="#24292f">The gap, honestly</text>
+    <text x="12" y="40" font-size="11" fill="#57606a">model perigee 359,105 km  ≈  ephemeris 359,102 ✓</text>
+    <text x="12" y="58" font-size="11" fill="#57606a">model apogee  405,534 km  ≈  ephemeris 405,538 ✓</text>
+    <text x="12" y="76" font-size="11" fill="#7d4f00">model now 361,528 km  vs  live 368,836 km  (−2%)</text>
+    <text x="12" y="96" font-size="11" fill="#6e7681">2-body ellipse nails the two endpoints but</text>
+    <text x="12" y="112" font-size="11" fill="#6e7681">not the perturbed middle (evection ≈ 11,000 km).</text>
+  </g>
+
+  <!-- ===== Panel 2: data flow ===== -->
+  <rect x="16" y="476" width="828" height="308" rx="10" fill="#f7f9fc" stroke="#d0d7de"/>
+  <text x="30" y="498" font-size="14" font-weight="700" fill="#1f6feb">② Program data-flow — distance-at(θ) → kilometres</text>
+
+  <!-- input -->
+  <rect x="40" y="512" width="200" height="34" rx="6" fill="#eaf2ff" stroke="#1f6feb"/>
+  <text x="140" y="533" text-anchor="middle" font-size="12" font-weight="700" fill="#1f6feb">input: θ (true anomaly, fp rad)</text>
+  <line x1="140" y1="546" x2="140" y2="566" stroke="#1f6feb" stroke-width="2" marker-end="url(#arrw)"/>
+
+  <!-- main compute box -->
+  <rect x="40" y="568" width="780" height="150" rx="8" fill="#fff" stroke="#d0d7de"/>
+  <text x="56" y="588" font-size="12" font-weight="700" fill="#24292f">distance-at(θ)</text>
+
+  <text x="56" y="610" font-size="12" fill="#24292f">①  e² = E·E ÷ S</text>
+  <text x="56" y="630" font-size="12" fill="#24292f">②  num = A·(S − e²) ÷ S        ←  a(1−e²)  in metres</text>
+
+  <!-- cos-fixed sub-box on the right -->
+  <rect x="430" y="600" width="370" height="78" rx="6" fill="#fff7e6" stroke="#bf8700"/>
+  <text x="442" y="620" font-size="12" font-weight="700" fill="#7d4f00">③  c = cos-fixed(θ)</text>
+  <text x="442" y="638" font-size="11" fill="#7d4f00">reduce-tau → [0, 2π)</text>
+  <text x="442" y="654" font-size="11" fill="#7d4f00">fold into [0, π/2] + sign flips</text>
+  <text x="442" y="670" font-size="11" fill="#7d4f00">cos-taylor (12-term recursion via taylor-step)</text>
+  <line x1="300" y1="638" x2="426" y2="638" stroke="#bf8700" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="300" y="630" font-size="11" fill="#7d4f00" text-anchor="end">θ</text>
+
+  <text x="56" y="654" font-size="12" fill="#24292f">④  denom = S + E·c ÷ S          ←  1 + e·cos θ</text>
+  <text x="56" y="672" font-size="12" fill="#24292f">⑤  d = num·S ÷ denom            ←  distance in metres</text>
+
+  <!-- output -->
+  <line x1="430" y1="718" x2="430" y2="738" stroke="#1a7f37" stroke-width="2" marker-end="url(#arr)"/>
+  <rect x="40" y="740" width="780" height="34" rx="6" fill="#eafff0" stroke="#1a7f37"/>
+  <text x="430" y="761" text-anchor="middle" font-size="12" font-weight="700" fill="#1a7f37">
+    output:  d metres  →  ÷ 1000  →  kilometres      ( d(0)=perigee,  d(π)=apogee )
+  </text>
+
+  <!-- constants strip -->
+  <text x="30" y="798" font-size="11" fill="#6e7681">
+    constants:  A = 382,320,000 m  (semi-major axis)  ·  E = 60,719  (eccentricity 0.0607 × S)  ·  S = 1,000,000  ·  π_fp = 3,141,593  ·  τ_fp = 6,283,185
+  </text>
+</svg>
+</body></html>
