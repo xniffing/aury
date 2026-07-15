@@ -5,6 +5,10 @@
 *.exe
 *.ll
 
+# Local example and program workspaces
+/examples/
+/programs/
+
 # Local agent/review artifacts
 /.pi-subagents/
 /examples/
