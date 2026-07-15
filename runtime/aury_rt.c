@@ -27,6 +27,52 @@ typedef aury_str_t* aury_str;
 typedef struct { int8_t ok; int64_t val; aury_str err; } aury_result_t;
 typedef aury_result_t* aury_result;
 
+static uint32_t decode_utf8(const unsigned char* data, int64_t len, int* width) {
+    unsigned char first = data[0];
+    if (first < 0x80 || len < 2) {
+        *width = 1;
+        return first;
+    }
+    if ((first & 0xe0) == 0xc0 && len >= 2) {
+        *width = 2;
+        return ((uint32_t)(first & 0x1f) << 6) | (data[1] & 0x3f);
+    }
+    if ((first & 0xf0) == 0xe0 && len >= 3) {
+        *width = 3;
+        return ((uint32_t)(first & 0x0f) << 12)
+            | ((uint32_t)(data[1] & 0x3f) << 6)
+            | (data[2] & 0x3f);
+    }
+    if ((first & 0xf8) == 0xf0 && len >= 4) {
+        *width = 4;
+        return ((uint32_t)(first & 0x07) << 18)
+            | ((uint32_t)(data[1] & 0x3f) << 12)
+            | ((uint32_t)(data[2] & 0x3f) << 6)
+            | (data[3] & 0x3f);
+    }
+    *width = 1;
+    return first;
+}
+
+/* The Unicode White_Space set used by Rust `char::is_whitespace`. */
+static int rust_whitespace(uint32_t cp) {
+    return (cp >= 0x09 && cp <= 0x0d)
+        || cp == 0x20
+        || cp == 0x85
+        || cp == 0xa0
+        || cp == 0x1680
+        || (cp >= 0x2000 && cp <= 0x200a)
+        || cp == 0x2028
+        || cp == 0x2029
+        || cp == 0x202f
+        || cp == 0x205f
+        || cp == 0x3000;
+}
+
+static int rust_control(uint32_t cp) {
+    return cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f);
+}
+
 aury_str aury_str_concat(aury_str a, aury_str b) {
     int64_t n = a->len + b->len;
     char* d = (char*)malloc((size_t)(n + 1));
@@ -69,8 +115,31 @@ static aury_result parse_i64(aury_str s, int trim) {
     int64_t start = 0;
     int64_t end = s->len;
     if (trim) {
-        while (start < end && isspace((unsigned char)s->data[start])) start++;
-        while (end > start && isspace((unsigned char)s->data[end - 1])) end--;
+        while (start < end) {
+            int width = 1;
+            uint32_t cp = decode_utf8(
+                (const unsigned char*)s->data + start,
+                end - start,
+                &width
+            );
+            if (!rust_whitespace(cp)) break;
+            start += width;
+        }
+        while (end > start) {
+            int64_t previous = end - 1;
+            while (previous > start
+                && (((unsigned char)s->data[previous] & 0xc0) == 0x80)) {
+                previous--;
+            }
+            int width = 1;
+            uint32_t cp = decode_utf8(
+                (const unsigned char*)s->data + previous,
+                end - previous,
+                &width
+            );
+            if (!rust_whitespace(cp) || previous + width != end) break;
+            end = previous;
+        }
     }
 
     int64_t len = end - start;
@@ -81,8 +150,12 @@ static aury_result parse_i64(aury_str s, int trim) {
     errno = 0;
     char* parsed_end = text;
     intmax_t parsed = strtoimax(text, &parsed_end, 10);
+    int first_width = 1;
+    uint32_t first_cp = len > 0
+        ? decode_utf8((const unsigned char*)text, len, &first_width)
+        : 0;
     int valid = len > 0
-        && (trim || !isspace((unsigned char)text[0]))
+        && (trim || !rust_whitespace(first_cp))
         && parsed_end == text + len
         && errno != ERANGE
         && parsed >= INT64_MIN
@@ -109,21 +182,39 @@ aury_result aury_i64_parse_strict(aury_str s) {
 /* Print using the interpreter's string Debug representation, including quotes. */
 void aury_str_print(aury_str s) {
     putchar('"');
-    for (int64_t i = 0; i < s->len; i++) {
+    for (int64_t i = 0; i < s->len;) {
         unsigned char byte = (unsigned char)s->data[i];
-        switch (byte) {
-            case 0: fputs("\\0", stdout); break;
-            case '\t': fputs("\\t", stdout); break;
-            case '\n': fputs("\\n", stdout); break;
-            case '\r': fputs("\\r", stdout); break;
-            case '\\': fputs("\\\\", stdout); break;
-            case '"': fputs("\\\"", stdout); break;
-            default:
-                if (byte < 0x20 || byte == 0x7f) {
-                    fprintf(stdout, "\\u{%x}", byte);
-                } else {
-                    putchar(byte);
-                }
+        if (byte == 0) {
+            fputs("\\0", stdout);
+            i++;
+        } else if (byte == '\t') {
+            fputs("\\t", stdout);
+            i++;
+        } else if (byte == '\n') {
+            fputs("\\n", stdout);
+            i++;
+        } else if (byte == '\r') {
+            fputs("\\r", stdout);
+            i++;
+        } else if (byte == '\\') {
+            fputs("\\\\", stdout);
+            i++;
+        } else if (byte == '"') {
+            fputs("\\\"", stdout);
+            i++;
+        } else {
+            int width = 1;
+            uint32_t cp = decode_utf8(
+                (const unsigned char*)s->data + i,
+                s->len - i,
+                &width
+            );
+            if (rust_control(cp)) {
+                fprintf(stdout, "\\u{%x}", cp);
+            } else {
+                fwrite(s->data + i, 1, (size_t)width, stdout);
+            }
+            i += width;
         }
     }
     fputs("\"\n", stdout);

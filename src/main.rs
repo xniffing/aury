@@ -13,7 +13,7 @@ USAGE:
 
 COMMANDS:
   validate <file>            Run type/effect/region checks; print rejections as JSON.
-  run <file> <fn> [args...]  Validate then run function <fn> with i64/bool args.
+  run <file> <fn> [args...]  Validate then run function <fn> with typed scalar args.
   test <file> [seed]         Validate then run property tests with shrinking + vacuity check.
   loop <file> [seed]         Run the closed repair loop: validate → apply admissible
                             patches → re-validate, until accept or budget exhaustion.
@@ -236,14 +236,16 @@ fn cmd_ll(args: &[String]) -> Result<ExitCode, String> {
 /// the lowering.
 fn cmd_compile(args: &[String]) -> Result<ExitCode, String> {
     // aury compile <file> <fn> [args...] [-o out]
-    let o_idx = args.iter().position(|a| a == "-o");
+    // `--` ends option parsing, allowing a literal string argument of `-o`.
+    let option_end = args.iter().position(|arg| arg == "--").unwrap_or(args.len());
+    let o_idx = args[..option_end].iter().position(|arg| arg == "-o");
     let excluded: std::collections::HashSet<usize> = o_idx
         .map(|i| [i, i + 1].into_iter().collect())
         .unwrap_or_default();
     let positional: Vec<&String> = args
         .iter()
         .enumerate()
-        .filter(|(i, a)| !excluded.contains(i) && a.as_str() != "-o")
+        .filter(|(i, _)| *i != option_end && !excluded.contains(i))
         .map(|(_, a)| a)
         .collect();
     let out = match o_idx {

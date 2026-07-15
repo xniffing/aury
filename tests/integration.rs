@@ -341,6 +341,7 @@ fn native_lowering_supports_str_result_and_typed_control_flow() {
         ("describe", vec!["-3".into()], "\"nonpos\"\n".into()),
         ("is-int", vec!["12x".into()], "false\n".into()),
         ("is-int", vec![" 42 ".into()], "true\n".into()),
+        ("is-int", vec!["\u{2003}42\u{2003}".into()], "true\n".into()),
         ("is-int", vec!["9223372036854775808".into()], "false\n".into()),
         ("invert", vec!["true".into()], "false\n".into()),
         ("early", vec!["1".into()], "\"early\"\n".into()),
@@ -352,6 +353,11 @@ fn native_lowering_supports_str_result_and_typed_control_flow() {
             format!("{:?}\n", "a\"\\\n!"),
         ),
         ("echo-match", vec!["--help".into()], "\"--help!\"\n".into()),
+        (
+            "echo-match",
+            vec!["\u{85}".into()],
+            format!("{:?}\n", "\u{85}!"),
+        ),
     ];
 
     for (index, (entry, args, expected)) in cases.into_iter().enumerate() {
