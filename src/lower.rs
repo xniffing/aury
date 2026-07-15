@@ -848,12 +848,11 @@ impl Lowerer {
     /// Return type of a builtin op (mirrors the validator's builtin table).
     fn builtin_ret(&self, op: &str) -> Type {
         match op {
-            "i64.add" | "i64.sub" | "i64.mul" | "i64.div" | "i64.mod"
-            | "i64.neg" | "i64.abs" | "i64.to_str" => Type::I64.to_or_str(op),
+            "i64.add" | "i64.sub" | "i64.mul" | "i64.div" | "i64.mod" | "i64.neg" | "i64.abs" => Type::I64,
             "i64.gt" | "i64.lt" | "i64.ge" | "i64.le" | "i64.eq" | "i64.neq" => Type::Bool,
+            "i64.to_str" | "str.concat" => Type::Str,
             "i64.parse" | "i64.from_str" => Type::Result(Box::new(Type::I64), Box::new(Type::Str)),
             "bool.and" | "bool.or" | "bool.not" | "bool.eq" => Type::Bool,
-            "str.concat" | "i64.to_str_real" => Type::Str,
             "str.eq" | "str.neq" => Type::Bool,
             "str.len" => Type::I64,
             "result.is_ok" => Type::Bool,
@@ -861,7 +860,3 @@ impl Lowerer {
         }
     }
 }
-
-// helper trait to keep builtin_ret readable
-trait TypeOrStr { fn to_or_str(self, op: &str) -> Type; }
-impl TypeOrStr for Type { fn to_or_str(self, op: &str) -> Type { if op == "i64.to_str" { Type::Str } else { self } } }
