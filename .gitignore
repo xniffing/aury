@@ -7,3 +7,5 @@
 
 # Local agent/review artifacts
 /.pi-subagents/
+/examples/
+/programs/
