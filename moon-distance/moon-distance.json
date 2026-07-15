@@ -1,0 +1,3138 @@
+{
+  "kind": "module",
+  "name": "moon-distance",
+  "items": [
+    {
+      "kind": "struct",
+      "name": "MoonDistance",
+      "fields": [
+        {
+          "name": "unix_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "center_distance_km",
+          "type": "i64"
+        },
+        {
+          "name": "surface_distance_km",
+          "type": "i64"
+        },
+        {
+          "name": "one_way_light_time_ms",
+          "type": "i64"
+        },
+        {
+          "name": "range",
+          "type": "str"
+        }
+      ]
+    },
+    {
+      "kind": "spec",
+      "properties": [
+        {
+          "name": "normalize-angle-bounds",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "bool.and",
+            "args": [
+              {
+                "kind": "call",
+                "op": "i64.ge",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "normalize-angle",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "a"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 0
+                  }
+                ]
+              },
+              {
+                "kind": "call",
+                "op": "i64.lt",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "normalize-angle",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "a"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 360000
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "cosine-is-even",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "cos-q6",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  }
+                ]
+              },
+              {
+                "kind": "call",
+                "op": "cos-q6",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "i64.neg",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "a"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "lunar-distance-is-physical",
+          "forall": [
+            {
+              "name": "timestamp",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "let",
+            "name": "km",
+            "type": "i64",
+            "init": {
+              "kind": "call",
+              "op": "moon-distance-km",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "timestamp"
+                }
+              ]
+            },
+            "body": {
+              "kind": "call",
+              "op": "bool.and",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.gt",
+                  "args": [
+                    {
+                      "kind": "ref",
+                      "name": "km"
+                    },
+                    {
+                      "kind": "lit",
+                      "value": 350000
+                    }
+                  ]
+                },
+                {
+                  "kind": "call",
+                  "op": "i64.lt",
+                  "args": [
+                    {
+                      "kind": "ref",
+                      "name": "km"
+                    },
+                    {
+                      "kind": "lit",
+                      "value": 410000
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "kind": "fn",
+      "name": "qmul",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mul",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "a"
+              },
+              {
+                "kind": "ref",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "kind": "lit",
+            "value": 1000000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "normalize-angle",
+      "params": [
+        {
+          "name": "angle",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "let",
+        "name": "r",
+        "type": "i64",
+        "init": {
+          "kind": "call",
+          "op": "i64.mod",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "angle"
+            },
+            {
+              "kind": "lit",
+              "value": 360000
+            }
+          ]
+        },
+        "body": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.lt",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "r"
+              },
+              {
+                "kind": "lit",
+                "value": 0
+              }
+            ]
+          },
+          "then": {
+            "kind": "call",
+            "op": "i64.add",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "r"
+              },
+              {
+                "kind": "lit",
+                "value": 360000
+              }
+            ]
+          },
+          "else": {
+            "kind": "ref",
+            "name": "r"
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "cos-q6",
+      "params": [
+        {
+          "name": "angle",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "let",
+        "name": "a",
+        "type": "i64",
+        "init": {
+          "kind": "call",
+          "op": "normalize-angle",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "angle"
+            }
+          ]
+        },
+        "body": {
+          "kind": "let",
+          "name": "half",
+          "type": "i64",
+          "init": {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "i64.gt",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "a"
+                },
+                {
+                  "kind": "lit",
+                  "value": 180000
+                }
+              ]
+            },
+            "then": {
+              "kind": "call",
+              "op": "i64.sub",
+              "args": [
+                {
+                  "kind": "lit",
+                  "value": 360000
+                },
+                {
+                  "kind": "ref",
+                  "name": "a"
+                }
+              ]
+            },
+            "else": {
+              "kind": "ref",
+              "name": "a"
+            }
+          },
+          "body": {
+            "kind": "let",
+            "name": "xdeg",
+            "type": "i64",
+            "init": {
+              "kind": "if",
+              "cond": {
+                "kind": "call",
+                "op": "i64.gt",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "half"
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 90000
+                  }
+                ]
+              },
+              "then": {
+                "kind": "call",
+                "op": "i64.sub",
+                "args": [
+                  {
+                    "kind": "lit",
+                    "value": 180000
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "half"
+                  }
+                ]
+              },
+              "else": {
+                "kind": "ref",
+                "name": "half"
+              }
+            },
+            "body": {
+              "kind": "let",
+              "name": "x",
+              "type": "i64",
+              "init": {
+                "kind": "call",
+                "op": "i64.div",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "i64.mul",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "xdeg"
+                      },
+                      {
+                        "kind": "lit",
+                        "value": 3141593
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 180000
+                  }
+                ]
+              },
+              "body": {
+                "kind": "let",
+                "name": "x2",
+                "type": "i64",
+                "init": {
+                  "kind": "call",
+                  "op": "qmul",
+                  "args": [
+                    {
+                      "kind": "ref",
+                      "name": "x"
+                    },
+                    {
+                      "kind": "ref",
+                      "name": "x"
+                    }
+                  ]
+                },
+                "body": {
+                  "kind": "let",
+                  "name": "x4",
+                  "type": "i64",
+                  "init": {
+                    "kind": "call",
+                    "op": "qmul",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "x2"
+                      },
+                      {
+                        "kind": "ref",
+                        "name": "x2"
+                      }
+                    ]
+                  },
+                  "body": {
+                    "kind": "let",
+                    "name": "x6",
+                    "type": "i64",
+                    "init": {
+                      "kind": "call",
+                      "op": "qmul",
+                      "args": [
+                        {
+                          "kind": "ref",
+                          "name": "x4"
+                        },
+                        {
+                          "kind": "ref",
+                          "name": "x2"
+                        }
+                      ]
+                    },
+                    "body": {
+                      "kind": "let",
+                      "name": "x8",
+                      "type": "i64",
+                      "init": {
+                        "kind": "call",
+                        "op": "qmul",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "x4"
+                          },
+                          {
+                            "kind": "ref",
+                            "name": "x4"
+                          }
+                        ]
+                      },
+                      "body": {
+                        "kind": "let",
+                        "name": "magnitude",
+                        "type": "i64",
+                        "init": {
+                          "kind": "call",
+                          "op": "i64.add",
+                          "args": [
+                            {
+                              "kind": "call",
+                              "op": "i64.sub",
+                              "args": [
+                                {
+                                  "kind": "call",
+                                  "op": "i64.add",
+                                  "args": [
+                                    {
+                                      "kind": "call",
+                                      "op": "i64.sub",
+                                      "args": [
+                                        {
+                                          "kind": "lit",
+                                          "value": 1000000
+                                        },
+                                        {
+                                          "kind": "call",
+                                          "op": "i64.div",
+                                          "args": [
+                                            {
+                                              "kind": "ref",
+                                              "name": "x2"
+                                            },
+                                            {
+                                              "kind": "lit",
+                                              "value": 2
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "kind": "call",
+                                      "op": "i64.div",
+                                      "args": [
+                                        {
+                                          "kind": "ref",
+                                          "name": "x4"
+                                        },
+                                        {
+                                          "kind": "lit",
+                                          "value": 24
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "kind": "call",
+                                  "op": "i64.div",
+                                  "args": [
+                                    {
+                                      "kind": "ref",
+                                      "name": "x6"
+                                    },
+                                    {
+                                      "kind": "lit",
+                                      "value": 720
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "kind": "call",
+                              "op": "i64.div",
+                              "args": [
+                                {
+                                  "kind": "ref",
+                                  "name": "x8"
+                                },
+                                {
+                                  "kind": "lit",
+                                  "value": 40320
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "body": {
+                          "kind": "if",
+                          "cond": {
+                            "kind": "call",
+                            "op": "i64.gt",
+                            "args": [
+                              {
+                                "kind": "ref",
+                                "name": "half"
+                              },
+                              {
+                                "kind": "lit",
+                                "value": 90000
+                              }
+                            ]
+                          },
+                          "then": {
+                            "kind": "call",
+                            "op": "i64.neg",
+                            "args": [
+                              {
+                                "kind": "ref",
+                                "name": "magnitude"
+                              }
+                            ]
+                          },
+                          "else": {
+                            "kind": "ref",
+                            "name": "magnitude"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "fundamental-angle",
+      "params": [
+        {
+          "name": "unix_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "base_mdeg",
+          "type": "i64"
+        },
+        {
+          "name": "rate_scaled",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "normalize-angle",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.add",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "base_mdeg"
+              },
+              {
+                "kind": "call",
+                "op": "i64.div",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "i64.mul",
+                    "args": [
+                      {
+                        "kind": "call",
+                        "op": "i64.sub",
+                        "args": [
+                          {
+                            "kind": "ref",
+                            "name": "unix_seconds"
+                          },
+                          {
+                            "kind": "lit",
+                            "value": 946728000
+                          }
+                        ]
+                      },
+                      {
+                        "kind": "ref",
+                        "name": "rate_scaled"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 8640000000
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "distance-term",
+      "params": [
+        {
+          "name": "coefficient_m",
+          "type": "i64"
+        },
+        {
+          "name": "angle_mdeg",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mul",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "coefficient_m"
+              },
+              {
+                "kind": "call",
+                "op": "cos-q6",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "angle_mdeg"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "lit",
+            "value": 1000000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "moon-distance-m",
+      "params": [
+        {
+          "name": "unix_seconds",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "let",
+        "name": "d",
+        "type": "i64",
+        "init": {
+          "kind": "call",
+          "op": "fundamental-angle",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "unix_seconds"
+            },
+            {
+              "kind": "lit",
+              "value": 297850
+            },
+            {
+              "kind": "lit",
+              "value": 1219074912
+            }
+          ]
+        },
+        "body": {
+          "kind": "let",
+          "name": "m",
+          "type": "i64",
+          "init": {
+            "kind": "call",
+            "op": "fundamental-angle",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "unix_seconds"
+              },
+              {
+                "kind": "lit",
+                "value": 357529
+              },
+              {
+                "kind": "lit",
+                "value": 98560028
+              }
+            ]
+          },
+          "body": {
+            "kind": "let",
+            "name": "mp",
+            "type": "i64",
+            "init": {
+              "kind": "call",
+              "op": "fundamental-angle",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "unix_seconds"
+                },
+                {
+                  "kind": "lit",
+                  "value": 134963
+                },
+                {
+                  "kind": "lit",
+                  "value": 1306499295
+                }
+              ]
+            },
+            "body": {
+              "kind": "let",
+              "name": "f",
+              "type": "i64",
+              "init": {
+                "kind": "call",
+                "op": "fundamental-angle",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "unix_seconds"
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 93272
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 1322935024
+                  }
+                ]
+              },
+              "body": {
+                "kind": "call",
+                "op": "i64.add",
+                "args": [
+                  {
+                    "kind": "lit",
+                    "value": 385000560
+                  },
+                  {
+                    "kind": "call",
+                    "op": "i64.add",
+                    "args": [
+                      {
+                        "kind": "call",
+                        "op": "i64.add",
+                        "args": [
+                          {
+                            "kind": "call",
+                            "op": "i64.add",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -20905355
+                                          },
+                                          {
+                                            "kind": "ref",
+                                            "name": "mp"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -3699111
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": -1
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -2955968
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.mul",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 2
+                                              },
+                                              {
+                                                "kind": "ref",
+                                                "name": "d"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -569925
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 48888
+                                              },
+                                              {
+                                                "kind": "ref",
+                                                "name": "m"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -3149
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.mul",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 2
+                                              },
+                                              {
+                                                "kind": "ref",
+                                                "name": "f"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 246158
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -152138
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -1
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "m"
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -1
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "mp"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -170733
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "ref",
+                                                "name": "mp"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -204586
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -1
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -129620
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "m"
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -1
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "kind": "call",
+                            "op": "i64.add",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": 108743
+                                          },
+                                          {
+                                            "kind": "ref",
+                                            "name": "d"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 104755
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "m"
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 10321
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "f"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": 79661
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "ref",
+                                                "name": "mp"
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": -2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "f"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -34782
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 4
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -1
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -23210
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 3
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -21636
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 4
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": -2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 24208
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      },
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -1
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "mp"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 30824
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "m"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -8379
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "ref",
+                                                "name": "d"
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": -1
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -16675
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "m"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -12831
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -1
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "m"
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "kind": "call",
+                        "op": "i64.add",
+                        "args": [
+                          {
+                            "kind": "call",
+                            "op": "i64.add",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -10445
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -11650
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.mul",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 4
+                                              },
+                                              {
+                                                "kind": "ref",
+                                                "name": "d"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": 14403
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": -3
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -7003
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "m"
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 10056
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -1
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "m"
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -2
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "mp"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": 6322
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "ref",
+                                                "name": "d"
+                                              },
+                                              {
+                                                "kind": "ref",
+                                                "name": "mp"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -9884
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 5751
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "m"
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -4950
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -1
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 4130
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      },
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -2
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "f"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -3958
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 3
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -1
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "kind": "call",
+                            "op": "i64.add",
+                            "args": [
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": 3258
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 4
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -1
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 2616
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -1
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -1897
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": 2
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "m"
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -1
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "mp"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -2117
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 3
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 2354
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -1
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "mp"
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -2
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "f"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -1423
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 4
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "kind": "call",
+                                "op": "i64.add",
+                                "args": [
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -1117
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 4
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": -1
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "m"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -1571
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "d"
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": -2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "mp"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": -1739
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.add",
+                                                    "args": [
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      },
+                                                      {
+                                                        "kind": "call",
+                                                        "op": "i64.mul",
+                                                        "args": [
+                                                          {
+                                                            "kind": "lit",
+                                                            "value": -2
+                                                          },
+                                                          {
+                                                            "kind": "ref",
+                                                            "name": "mp"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "kind": "call",
+                                    "op": "i64.add",
+                                    "args": [
+                                      {
+                                        "kind": "call",
+                                        "op": "distance-term",
+                                        "args": [
+                                          {
+                                            "kind": "lit",
+                                            "value": -4421
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "i64.add",
+                                            "args": [
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": 2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.mul",
+                                                "args": [
+                                                  {
+                                                    "kind": "lit",
+                                                    "value": -2
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "f"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "kind": "call",
+                                        "op": "i64.add",
+                                        "args": [
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 1165
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "m"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "ref",
+                                                    "name": "mp"
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "kind": "call",
+                                            "op": "distance-term",
+                                            "args": [
+                                              {
+                                                "kind": "lit",
+                                                "value": 8752
+                                              },
+                                              {
+                                                "kind": "call",
+                                                "op": "i64.add",
+                                                "args": [
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "d"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "kind": "call",
+                                                    "op": "i64.mul",
+                                                    "args": [
+                                                      {
+                                                        "kind": "lit",
+                                                        "value": 2
+                                                      },
+                                                      {
+                                                        "kind": "ref",
+                                                        "name": "f"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "moon-distance-km",
+      "params": [
+        {
+          "name": "unix_seconds",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "moon-distance-m",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "unix_seconds"
+              }
+            ]
+          },
+          {
+            "kind": "lit",
+            "value": 1000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "classify-distance",
+      "params": [
+        {
+          "name": "distance_km",
+          "type": "i64"
+        }
+      ],
+      "ret": "str",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.lt",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "distance_km"
+            },
+            {
+              "kind": "lit",
+              "value": 370000
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": "near perigee"
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.gt",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "distance_km"
+              },
+              {
+                "kind": "lit",
+                "value": 400000
+              }
+            ]
+          },
+          "then": {
+            "kind": "lit",
+            "value": "near apogee"
+          },
+          "else": {
+            "kind": "lit",
+            "value": "mid-range"
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "moon-report",
+      "params": [
+        {
+          "name": "unix_seconds",
+          "type": "i64"
+        }
+      ],
+      "ret": "(struct MoonDistance)",
+      "body": {
+        "kind": "let",
+        "name": "km",
+        "type": "i64",
+        "init": {
+          "kind": "call",
+          "op": "moon-distance-km",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "unix_seconds"
+            }
+          ]
+        },
+        "body": {
+          "kind": "new-struct",
+          "name": "MoonDistance",
+          "fields": [
+            {
+              "name": "unix_seconds",
+              "value": {
+                "kind": "ref",
+                "name": "unix_seconds"
+              }
+            },
+            {
+              "name": "center_distance_km",
+              "value": {
+                "kind": "ref",
+                "name": "km"
+              }
+            },
+            {
+              "name": "surface_distance_km",
+              "value": {
+                "kind": "call",
+                "op": "i64.sub",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "km"
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 8108
+                  }
+                ]
+              }
+            },
+            {
+              "name": "one_way_light_time_ms",
+              "value": {
+                "kind": "call",
+                "op": "i64.div",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "i64.mul",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "km"
+                      },
+                      {
+                        "kind": "lit",
+                        "value": 1000
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 299792
+                  }
+                ]
+              }
+            },
+            {
+              "name": "range",
+              "value": {
+                "kind": "call",
+                "op": "classify-distance",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "km"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
