@@ -1,0 +1,9 @@
+# Rust build output
+/target/
+
+# Native artifacts produced by `aury compile`
+*.exe
+*.ll
+
+# Local agent/review artifacts
+/.pi-subagents/

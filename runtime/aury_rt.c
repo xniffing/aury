@@ -1,221 +1,297 @@
-// Aury native runtime — linked into every `aury compile`d executable.
-//
-// Provides the heap-backed operations for the parts of Aury that are tedious
-// or fragile to emit as inline LLVM IR: string allocation/concat/compare,
-// i64<->str conversion, and the result(i64,str) constructor. The lowering
-// (src/lower.rs) declares these `extern` and calls them; `cmd_compile` links
-// this file alongside the generated LLVM IR.
-//
-// v0 memory model: allocations are never freed (Aury values are immutable;
-// the process is short-lived). Region-based arenas (the proposal's actual
-// memory model) are the planned next step.
+// Aury native runtime. Immutable aggregate values use uniform 8-byte slots:
+// vectors are { i64 len, i64* slots }, while structs and results are boxed
+// contiguous slot arrays. Allocations intentionally live for the process.
 
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
-/* aury str  ==  ptr to { i64 len, i8* data }   (matches the lowering's layout) */
-typedef struct { int64_t len; char* data; } aury_str_t;
-typedef aury_str_t* aury_str;
+typedef struct { int64_t len; char *data; } aury_str_t;
+typedef aury_str_t *aury_str;
+typedef struct { int64_t len; int64_t *slots; } aury_vec_t;
+typedef struct { int64_t tag; int64_t payload; } aury_result_t;
 
-/* aury result(i64,str)  ==  ptr to { i1 ok, i64 val, aury_str err }
-   (int8_t ok maps to LLVM i1 in the first byte; i64 val at offset 8.) */
-typedef struct { int8_t ok; int64_t val; aury_str err; } aury_result_t;
-typedef aury_result_t* aury_result;
+static void *checked_calloc(size_t count, size_t size) {
+    if (size != 0 && count > SIZE_MAX / size) abort();
+    void *value = calloc(count == 0 ? 1 : count, size == 0 ? 1 : size);
+    if (value == NULL) abort();
+    return value;
+}
 
-static uint32_t decode_utf8(const unsigned char* data, int64_t len, int* width) {
+int64_t *aury_box_new(int64_t slots) {
+    if (slots < 0) abort();
+    return (int64_t *)checked_calloc((size_t)slots, sizeof(int64_t));
+}
+
+int64_t *aury_box_slot(int64_t *box, int64_t index) {
+    if (index < 0) abort();
+    return box + index;
+}
+
+aury_vec_t *aury_vec_new(int64_t len) {
+    if (len < 0) abort();
+    aury_vec_t *value = (aury_vec_t *)checked_calloc(1, sizeof(aury_vec_t));
+    value->len = len;
+    value->slots = aury_box_new(len);
+    return value;
+}
+
+int64_t *aury_vec_slot(aury_vec_t *value, int64_t index) {
+    if (index < 0 || index >= value->len) abort();
+    return value->slots + index;
+}
+
+static uint64_t rng_seed;
+static uint64_t rng_step;
+
+void aury_rng_init(uint64_t seed) {
+    rng_seed = seed;
+    rng_step = 0;
+}
+
+int64_t aury_rng_next(void) {
+    rng_step += UINT64_C(0x9E3779B97F4A7C15);
+    uint64_t z = rng_seed + rng_step;
+    z = (z ^ (z >> 30)) * UINT64_C(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)) * UINT64_C(0x94D049BB133111EB);
+    return (int64_t)(z ^ (z >> 31));
+}
+
+int64_t aury_i64_div(int64_t a, int64_t b) {
+    if (b == 0) abort();
+    if (a == INT64_MIN && b == -1) return INT64_MIN;
+    return a / b;
+}
+
+int64_t aury_i64_mod(int64_t a, int64_t b) {
+    if (b == 0) abort();
+    if (a == INT64_MIN && b == -1) return 0;
+    return a % b;
+}
+
+static uint32_t decode_utf8(const unsigned char *data, int64_t len, int *width) {
     unsigned char first = data[0];
-    if (first < 0x80 || len < 2) {
-        *width = 1;
-        return first;
-    }
+    if (first < 0x80 || len < 2) { *width = 1; return first; }
     if ((first & 0xe0) == 0xc0 && len >= 2) {
-        *width = 2;
-        return ((uint32_t)(first & 0x1f) << 6) | (data[1] & 0x3f);
+        *width = 2; return ((uint32_t)(first & 0x1f) << 6) | (data[1] & 0x3f);
     }
     if ((first & 0xf0) == 0xe0 && len >= 3) {
         *width = 3;
-        return ((uint32_t)(first & 0x0f) << 12)
-            | ((uint32_t)(data[1] & 0x3f) << 6)
-            | (data[2] & 0x3f);
+        return ((uint32_t)(first & 0x0f) << 12) | ((uint32_t)(data[1] & 0x3f) << 6) | (data[2] & 0x3f);
     }
     if ((first & 0xf8) == 0xf0 && len >= 4) {
         *width = 4;
-        return ((uint32_t)(first & 0x07) << 18)
-            | ((uint32_t)(data[1] & 0x3f) << 12)
-            | ((uint32_t)(data[2] & 0x3f) << 6)
-            | (data[3] & 0x3f);
+        return ((uint32_t)(first & 7) << 18) | ((uint32_t)(data[1] & 0x3f) << 12)
+            | ((uint32_t)(data[2] & 0x3f) << 6) | (data[3] & 0x3f);
     }
-    *width = 1;
-    return first;
+    *width = 1; return first;
 }
 
-/* The Unicode White_Space set used by Rust `char::is_whitespace`. */
 static int rust_whitespace(uint32_t cp) {
-    return (cp >= 0x09 && cp <= 0x0d)
-        || cp == 0x20
-        || cp == 0x85
-        || cp == 0xa0
-        || cp == 0x1680
-        || (cp >= 0x2000 && cp <= 0x200a)
-        || cp == 0x2028
-        || cp == 0x2029
-        || cp == 0x202f
-        || cp == 0x205f
-        || cp == 0x3000;
+    return (cp >= 0x09 && cp <= 0x0d) || cp == 0x20 || cp == 0x85 || cp == 0xa0
+        || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200a) || cp == 0x2028
+        || cp == 0x2029 || cp == 0x202f || cp == 0x205f || cp == 0x3000;
 }
 
-static int rust_control(uint32_t cp) {
-    return cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f);
-}
+static int rust_control(uint32_t cp) { return cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f); }
 
-aury_str aury_str_concat(aury_str a, aury_str b) {
-    int64_t n = a->len + b->len;
-    char* d = (char*)malloc((size_t)(n + 1));
-    memcpy(d, a->data, (size_t)a->len);
-    memcpy(d + a->len, b->data, (size_t)b->len);
-    d[n] = 0;
-    aury_str r = (aury_str)malloc(sizeof(aury_str_t));
-    r->len = n; r->data = d;
-    return r;
-}
-
-int64_t aury_str_eq(aury_str a, aury_str b) {
-    if (a->len != b->len) return 0;
-    return memcmp(a->data, b->data, (size_t)a->len) == 0 ? 1 : 0;
-}
-
-aury_str aury_i64_to_str(int64_t n) {
-    char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%lld", (long long)n);
-    if (len < 0) len = 0;
-    char* d = (char*)malloc((size_t)(len + 1));
-    memcpy(d, buf, (size_t)len);
-    d[len] = 0;
-    aury_str r = (aury_str)malloc(sizeof(aury_str_t));
-    r->len = len; r->data = d;
-    return r;
-}
-
-static aury_str make_string(const char* data, int64_t len) {
-    char* copy = (char*)malloc((size_t)len + 1);
+static aury_str make_string(const char *data, int64_t len) {
+    char *copy = (char *)checked_calloc((size_t)len + 1, 1);
     memcpy(copy, data, (size_t)len);
-    copy[len] = 0;
-    aury_str result = (aury_str)malloc(sizeof(aury_str_t));
-    result->len = len;
-    result->data = copy;
+    aury_str result = (aury_str)checked_calloc(1, sizeof(aury_str_t));
+    result->len = len; result->data = copy;
     return result;
 }
 
-static aury_result parse_i64(aury_str s, int trim) {
-    int64_t start = 0;
-    int64_t end = s->len;
+aury_str aury_str_concat(aury_str a, aury_str b) {
+    if (a->len > INT64_MAX - b->len) abort();
+    int64_t len = a->len + b->len;
+    char *data = (char *)checked_calloc((size_t)len + 1, 1);
+    memcpy(data, a->data, (size_t)a->len);
+    memcpy(data + a->len, b->data, (size_t)b->len);
+    aury_str result = (aury_str)checked_calloc(1, sizeof(aury_str_t));
+    result->len = len; result->data = data;
+    return result;
+}
+
+int64_t aury_str_eq(aury_str a, aury_str b) {
+    return a->len == b->len && memcmp(a->data, b->data, (size_t)a->len) == 0;
+}
+
+aury_str aury_i64_to_str(int64_t number) {
+    char buffer[32];
+    int len = snprintf(buffer, sizeof(buffer), "%" PRId64, number);
+    return make_string(buffer, len < 0 ? 0 : len);
+}
+
+static aury_result_t *parse_i64(aury_str string, int trim) {
+    int64_t start = 0, end = string->len;
     if (trim) {
         while (start < end) {
             int width = 1;
-            uint32_t cp = decode_utf8(
-                (const unsigned char*)s->data + start,
-                end - start,
-                &width
-            );
+            uint32_t cp = decode_utf8((const unsigned char *)string->data + start, end - start, &width);
             if (!rust_whitespace(cp)) break;
             start += width;
         }
         while (end > start) {
             int64_t previous = end - 1;
-            while (previous > start
-                && (((unsigned char)s->data[previous] & 0xc0) == 0x80)) {
-                previous--;
-            }
+            while (previous > start && (((unsigned char)string->data[previous] & 0xc0) == 0x80)) previous--;
             int width = 1;
-            uint32_t cp = decode_utf8(
-                (const unsigned char*)s->data + previous,
-                end - previous,
-                &width
-            );
+            uint32_t cp = decode_utf8((const unsigned char *)string->data + previous, end - previous, &width);
             if (!rust_whitespace(cp) || previous + width != end) break;
             end = previous;
         }
     }
-
     int64_t len = end - start;
-    char* text = (char*)malloc((size_t)len + 1);
-    memcpy(text, s->data + start, (size_t)len);
-    text[len] = 0;
-
+    char *text = (char *)checked_calloc((size_t)len + 1, 1);
+    memcpy(text, string->data + start, (size_t)len);
     errno = 0;
-    char* parsed_end = text;
+    char *parsed_end = text;
     intmax_t parsed = strtoimax(text, &parsed_end, 10);
     int first_width = 1;
-    uint32_t first_cp = len > 0
-        ? decode_utf8((const unsigned char*)text, len, &first_width)
-        : 0;
-    int valid = len > 0
-        && (trim || !rust_whitespace(first_cp))
-        && parsed_end == text + len
-        && errno != ERANGE
-        && parsed >= INT64_MIN
-        && parsed <= INT64_MAX;
+    uint32_t first_cp = len > 0 ? decode_utf8((const unsigned char *)text, len, &first_width) : 0;
+    int valid = len > 0 && (trim || !rust_whitespace(first_cp)) && parsed_end == text + len
+        && errno != ERANGE && parsed >= INT64_MIN && parsed <= INT64_MAX;
     free(text);
 
-    aury_result result = (aury_result)malloc(sizeof(aury_result_t));
-    result->ok = valid ? 1 : 0;
-    result->val = valid ? (int64_t)parsed : 0;
-    result->err = valid ? NULL : make_string("not an i64", 10);
+    aury_result_t *result = (aury_result_t *)checked_calloc(1, sizeof(aury_result_t));
+    result->tag = valid ? 1 : 0;
+    if (valid) {
+        result->payload = (int64_t)parsed;
+    } else {
+        static const char prefix[] = "not an i64: ";
+        int64_t error_len = (int64_t)(sizeof(prefix) - 1) + string->len;
+        char *error = (char *)checked_calloc((size_t)error_len + 1, 1);
+        memcpy(error, prefix, sizeof(prefix) - 1);
+        memcpy(error + sizeof(prefix) - 1, string->data, (size_t)string->len);
+        result->payload = (int64_t)(intptr_t)make_string(error, error_len);
+        free(error);
+    }
     return result;
 }
 
-/* `i64.parse` trims like Rust's `str::trim().parse::<i64>()`. */
-aury_result aury_i64_parse(aury_str s) {
-    return parse_i64(s, 1);
-}
+aury_result_t *aury_i64_parse(aury_str string) { return parse_i64(string, 1); }
+aury_result_t *aury_i64_parse_strict(aury_str string) { return parse_i64(string, 0); }
 
-/* Casts use strict `str::parse::<i64>()` semantics (no surrounding space). */
-aury_result aury_i64_parse_strict(aury_str s) {
-    return parse_i64(s, 0);
-}
-
-/* Print using the interpreter's string Debug representation, including quotes. */
-void aury_str_print(aury_str s) {
+static void print_string(aury_str string) {
     putchar('"');
-    for (int64_t i = 0; i < s->len;) {
-        unsigned char byte = (unsigned char)s->data[i];
-        if (byte == 0) {
-            fputs("\\0", stdout);
-            i++;
-        } else if (byte == '\t') {
-            fputs("\\t", stdout);
-            i++;
-        } else if (byte == '\n') {
-            fputs("\\n", stdout);
-            i++;
-        } else if (byte == '\r') {
-            fputs("\\r", stdout);
-            i++;
-        } else if (byte == '\\') {
-            fputs("\\\\", stdout);
-            i++;
-        } else if (byte == '"') {
-            fputs("\\\"", stdout);
-            i++;
-        } else {
+    for (int64_t i = 0; i < string->len;) {
+        unsigned char byte = (unsigned char)string->data[i];
+        if (byte == 0) { fputs("\\0", stdout); i++; }
+        else if (byte == '\t') { fputs("\\t", stdout); i++; }
+        else if (byte == '\n') { fputs("\\n", stdout); i++; }
+        else if (byte == '\r') { fputs("\\r", stdout); i++; }
+        else if (byte == '\\') { fputs("\\\\", stdout); i++; }
+        else if (byte == '"') { fputs("\\\"", stdout); i++; }
+        else {
             int width = 1;
-            uint32_t cp = decode_utf8(
-                (const unsigned char*)s->data + i,
-                s->len - i,
-                &width
-            );
-            if (rust_control(cp)) {
-                fprintf(stdout, "\\u{%x}", cp);
-            } else {
-                fwrite(s->data + i, 1, (size_t)width, stdout);
-            }
+            uint32_t cp = decode_utf8((const unsigned char *)string->data + i, string->len - i, &width);
+            if (rust_control(cp)) fprintf(stdout, "\\u{%x}", cp);
+            else fwrite(string->data + i, 1, (size_t)width, stdout);
             i += width;
         }
     }
-    fputs("\"\n", stdout);
+    putchar('"');
+}
+
+static uint64_t descriptor_number(const char **descriptor) {
+    uint64_t value = 0;
+    while (**descriptor >= '0' && **descriptor <= '9') {
+        value = value * 10 + (uint64_t)(*(*descriptor)++ - '0');
+    }
+    if (*(*descriptor)++ != ':') abort();
+    return value;
+}
+
+static const char *skip_descriptor(const char *descriptor) {
+    char kind = *descriptor++;
+    if (kind == 'i' || kind == 'b' || kind == 's' || kind == 'u') return descriptor;
+    if (kind == 'v') return skip_descriptor(descriptor);
+    if (kind == 'r') return skip_descriptor(skip_descriptor(descriptor));
+    if (kind == 't') {
+        uint64_t name_len = descriptor_number(&descriptor);
+        descriptor += name_len;
+        uint64_t fields = descriptor_number(&descriptor);
+        for (uint64_t i = 0; i < fields; i++) {
+            uint64_t field_len = descriptor_number(&descriptor);
+            descriptor += field_len;
+            descriptor = skip_descriptor(descriptor);
+        }
+        return descriptor;
+    }
+    abort();
+}
+
+static void print_value(int64_t bits, const char **descriptor) {
+    char kind = *(*descriptor)++;
+    if (kind == 'i') { fprintf(stdout, "%" PRId64, bits); return; }
+    if (kind == 'b') { fputs(bits ? "true" : "false", stdout); return; }
+    if (kind == 's') { print_string((aury_str)(intptr_t)bits); return; }
+    if (kind == 'u') { fputs("unit", stdout); return; }
+    if (kind == 'v') {
+        aury_vec_t *vector = (aury_vec_t *)(intptr_t)bits;
+        const char *element = *descriptor;
+        const char *after = skip_descriptor(element);
+        putchar('[');
+        for (int64_t i = 0; i < vector->len; i++) {
+            if (i != 0) fputs(", ", stdout);
+            const char *cursor = element;
+            print_value(vector->slots[i], &cursor);
+        }
+        putchar(']');
+        *descriptor = after;
+        return;
+    }
+    if (kind == 't') {
+        uint64_t name_len = descriptor_number(descriptor);
+        fwrite(*descriptor, 1, (size_t)name_len, stdout);
+        *descriptor += name_len;
+        uint64_t fields = descriptor_number(descriptor);
+        int64_t *slots = (int64_t *)(intptr_t)bits;
+        putchar('{');
+        for (uint64_t i = 0; i < fields; i++) {
+            if (i != 0) fputs(", ", stdout);
+            uint64_t field_len = descriptor_number(descriptor);
+            fwrite(*descriptor, 1, (size_t)field_len, stdout);
+            *descriptor += field_len;
+            fputs(": ", stdout);
+            print_value(slots[i], descriptor);
+        }
+        putchar('}');
+        return;
+    }
+    if (kind == 'r') {
+        aury_result_t *result = (aury_result_t *)(intptr_t)bits;
+        const char *ok = *descriptor;
+        const char *err = skip_descriptor(ok);
+        if (result->tag) {
+            fputs("ok(", stdout);
+            const char *cursor = ok;
+            print_value(result->payload, &cursor);
+            *descriptor = skip_descriptor(err);
+        } else {
+            fputs("err(", stdout);
+            const char *cursor = err;
+            print_value(result->payload, &cursor);
+            *descriptor = cursor;
+        }
+        putchar(')');
+        return;
+    }
+    abort();
+}
+
+void aury_value_print(int64_t bits, const char *descriptor) {
+    print_value(bits, &descriptor);
+    putchar('\n');
+}
+
+void aury_str_print(aury_str string) {
+    print_string(string);
+    putchar('\n');
 }

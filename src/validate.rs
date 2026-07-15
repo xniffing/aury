@@ -11,7 +11,7 @@ use crate::id::NodeId;
 use crate::repair::*;
 use crate::sexpr::Sexpr;
 use crate::types::{EffectRow, Type};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A binding in scope during checking: its type, whether it's affine (owned),
 /// whether it has been consumed (moved), and the region it lives in (if any).
@@ -52,10 +52,24 @@ struct FnSig {
 pub fn check_module(module: &Module) -> ValidationOutcome {
     let mut fns = HashMap::new();
     let mut structs = HashMap::new();
+    let mut total = Vec::new();
     // First pass: collect signatures.
     for item in &module.items {
         match item {
             ModuleItem::Fn(f) => {
+                if fns.contains_key(&f.name) {
+                    total.push(Rejection {
+                        gate: Gate::Type,
+                        kind: "DUPLICATE_FUNCTION".into(),
+                        node: f.id,
+                        path: f.name.clone(),
+                        expected: "a unique function name".into(),
+                        received: format!("duplicate function `{}`", f.name),
+                        context: HashMap::new(),
+                        repairs: vec![],
+                    });
+                    continue;
+                }
                 fns.insert(
                     f.name.clone(),
                     FnSig {
@@ -67,13 +81,40 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                 );
             }
             ModuleItem::Struct(s) => {
+                if structs.contains_key(&s.name) {
+                    total.push(Rejection {
+                        gate: Gate::Type,
+                        kind: "DUPLICATE_STRUCT".into(),
+                        node: s.id,
+                        path: s.name.clone(),
+                        expected: "a unique struct type name".into(),
+                        received: format!("duplicate struct `{}`", s.name),
+                        context: HashMap::new(),
+                        repairs: vec![],
+                    });
+                    continue;
+                }
+                let mut seen = HashSet::new();
+                for (field, _) in &s.fields {
+                    if !seen.insert(field) {
+                        total.push(Rejection {
+                            gate: Gate::Type,
+                            kind: "DUPLICATE_FIELD".into(),
+                            node: s.id,
+                            path: format!("{}.{}", s.name, field),
+                            expected: "each struct field exactly once".into(),
+                            received: format!("duplicate field `{}`", field),
+                            context: HashMap::new(),
+                            repairs: vec![],
+                        });
+                    }
+                }
                 structs.insert(s.name.clone(), s.clone());
             }
             _ => {}
         }
     }
     // Second pass: check each function body.
-    let mut total = Vec::new();
     for item in &module.items {
         if let ModuleItem::Fn(f) = item {
             let mut c = Checker {
@@ -102,7 +143,10 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                     },
                 );
             }
-            let _ = c.check_expr(&f.body, &mut scope, None);
+            let body_ty = c.check_expr(&f.body, &mut scope, Some(&f.ret));
+            if !c.diverges(&f.body) && !c.types_agree(&body_ty, &f.ret) {
+                c.reject_return_type(f.body.id(), &f.ret, &body_ty, &f.body);
+            }
             // Effect check: collect the body's effects and compare against the
             // declared row. (Simplified: pure functions must not call effectful
             // ops.)
@@ -142,18 +186,28 @@ impl Checker {
     /// sibling — the pattern that lets `loop` break out via `return`.
     fn diverges(&self, e: &Expr) -> bool {
         match e {
-            Expr::Return { .. } => true,
-            Expr::Loop { .. } => true,
-            Expr::Block { tail, .. } => self.diverges(tail),
-            Expr::If { then, els, .. } => {
-                self.diverges(then) && self.diverges(els)
+            Expr::Return { .. } | Expr::Loop { .. } => true,
+            Expr::Let { init, body, .. } => self.diverges(init) || self.diverges(body),
+            Expr::Call { args, .. } => args.iter().any(|arg| self.diverges(arg)),
+            Expr::If { cond, then, els, .. } => {
+                self.diverges(cond) || (self.diverges(then) && self.diverges(els))
             }
-            Expr::Match { arms, .. } => {
-                !arms.is_empty() && arms.iter().all(|a| self.diverges(&a.body))
+            Expr::Match { scrut, arms, .. } => {
+                self.diverges(scrut)
+                    || (!arms.is_empty() && arms.iter().all(|arm| self.diverges(&arm.body)))
             }
-            Expr::Let { body, .. } => self.diverges(body),
+            Expr::Block { stmts, tail, .. } => {
+                stmts.iter().any(|stmt| self.diverges(stmt)) || self.diverges(tail)
+            }
             Expr::Region { body, .. } => self.diverges(body),
-            _ => false,
+            Expr::Copy { value, .. } | Expr::Cast { value, .. } => self.diverges(value),
+            Expr::VecNew { elems, .. } => elems.iter().any(|elem| self.diverges(elem)),
+            Expr::Index { target, index, .. } => self.diverges(target) || self.diverges(index),
+            Expr::Len { target, .. } | Expr::Field { target, .. } => self.diverges(target),
+            Expr::StructNew { fields, .. } => {
+                fields.iter().any(|(_, value)| self.diverges(value))
+            }
+            Expr::Lit { .. } | Expr::Ref { .. } => false,
         }
     }
 
@@ -183,7 +237,7 @@ impl Checker {
             }
             Expr::Let { id, name, ty, init, body } => {
                 let init_ty = self.check_expr(init, scope, ret_ty);
-                if !self.types_agree(&init_ty, ty) {
+                if !self.diverges(init) && !self.types_agree(&init_ty, ty) {
                     self.reject_type_mismatch(*id, ty, &init_ty, "let binding");
                     // still continue with the declared type in scope
                 }
@@ -191,18 +245,25 @@ impl Checker {
                 if let Some(r) = &region {
                     self.regions_in_scope.push(r.clone());
                 }
-                scope.insert(
+                let previous = scope.insert(
                     name.clone(),
                     Binding {
                         ty: ty.clone(),
                         affine: is_affine(ty),
                         moved: false,
-                        region,
+                        region: region.clone(),
                         is_cap: false,
                     },
                 );
                 let body_ty = self.check_expr(body, scope, ret_ty);
-                scope.remove(name);
+                if region.is_some() {
+                    self.regions_in_scope.pop();
+                }
+                if let Some(previous) = previous {
+                    scope.insert(name.clone(), previous);
+                } else {
+                    scope.remove(name);
+                }
                 body_ty
             }
             Expr::Call { id, op, args } => {
@@ -221,7 +282,7 @@ impl Checker {
                         args.iter().zip(sig.params.iter()).enumerate()
                     {
                         let arg_ty = self.check_expr(arg, scope, ret_ty);
-                        if !is_cap && !self.types_agree(&arg_ty, pty) {
+                        if !self.diverges(arg) && !is_cap && !self.types_agree(&arg_ty, pty) {
                             self.reject_call_arg_type(*id, op, i, pname, pty, &arg_ty, arg);
                         }
                         if arg.is_cap_value() {
@@ -245,7 +306,7 @@ impl Checker {
             }
             Expr::If { id, cond, then, els } => {
                 let cond_ty = self.check_expr(cond, scope, ret_ty);
-                if !self.types_agree(&cond_ty, &Type::Bool) {
+                if !self.diverges(cond) && !self.types_agree(&cond_ty, &Type::Bool) {
                     self.reject_type_mismatch(cond.id(), &Type::Bool, &cond_ty, "if condition");
                 }
                 let then_ty = self.check_expr(then, scope, ret_ty);
@@ -256,7 +317,7 @@ impl Checker {
                 // classic pattern for breaking out of a `loop`.
                 let then_div = self.diverges(then);
                 let els_div = self.diverges(els);
-                if !then_div && !els_div && !self.types_agree(&then_ty, &els_ty) {
+                if !self.diverges(cond) && !then_div && !els_div && !self.types_agree(&then_ty, &els_ty) {
                     self.reject_branch_mismatch(*id, &then_ty, &els_ty);
                 }
                 if then_div && els_div {
@@ -283,6 +344,9 @@ impl Checker {
                 // the others; the match's type is that of a non-diverging arm.
                 let mut agreed: Option<Type> = None;
                 for (t, d) in arm_tys.iter().zip(arm_div.iter()) {
+                    if self.diverges(scrut) {
+                        break;
+                    }
                     if *d {
                         continue;
                     }
@@ -304,7 +368,7 @@ impl Checker {
             Expr::Return { id, value } => {
                 let val_ty = self.check_expr(value, scope, ret_ty);
                 if let Some(ret) = ret_ty {
-                    if !self.types_agree(&val_ty, ret) {
+                    if !self.diverges(value) && !self.types_agree(&val_ty, ret) {
                         self.reject_return_type(*id, ret, &val_ty, value);
                     }
                 }
@@ -324,7 +388,7 @@ impl Checker {
             }
             Expr::Copy { id, value } => {
                 let v = self.check_expr(value, scope, ret_ty);
-                if !is_affine(&v) {
+                if !self.diverges(value) && !is_affine(&v) {
                     self.reject_copy_of_non_affine(*id, &v);
                 }
                 v
@@ -339,7 +403,7 @@ impl Checker {
                             continue;
                         }
                     };
-                    if !self.types_agree(&el_ty, &inner) {
+                    if !self.diverges(el) && !self.types_agree(&el_ty, &inner) {
                         self.reject_vec_elem_type(*id, i, &inner, &el_ty, el);
                     }
                 }
@@ -348,24 +412,32 @@ impl Checker {
             Expr::Index { id, target, index } => {
                 let t = self.check_expr(target, scope, ret_ty);
                 let idx = self.check_expr(index, scope, ret_ty);
-                if !self.types_agree(&idx, &Type::I64) {
+                if !self.diverges(index) && !self.types_agree(&idx, &Type::I64) {
                     self.reject_type_mismatch(index.id(), &Type::I64, &idx, "vec index");
                 }
-                match &t {
-                    Type::Vec(inner) => inner.as_ref().clone(),
-                    _ => {
-                        self.reject_index_non_vec(*id, &t);
-                        Type::Unit
+                if self.diverges(target) || self.diverges(index) {
+                    Type::Unit
+                } else {
+                    match &t {
+                        Type::Vec(inner) => inner.as_ref().clone(),
+                        _ => {
+                            self.reject_index_non_vec(*id, &t);
+                            Type::Unit
+                        }
                     }
                 }
             }
             Expr::Len { id, target } => {
                 let t = self.check_expr(target, scope, ret_ty);
-                match &t {
-                    Type::Vec(_) => Type::I64,
-                    _ => {
-                        self.reject_len_non_vec(*id, &t);
-                        Type::I64
+                if self.diverges(target) {
+                    Type::I64
+                } else {
+                    match &t {
+                        Type::Vec(_) => Type::I64,
+                        _ => {
+                            self.reject_len_non_vec(*id, &t);
+                            Type::I64
+                        }
                     }
                 }
             }
@@ -375,14 +447,19 @@ impl Checker {
                     self.reject_unknown_struct(*id, name);
                     return Type::Unit;
                 };
+                let mut seen = HashSet::new();
                 for (fname, fval) in fields {
                     let val_ty = self.check_expr(fval, scope, ret_ty);
+                    if !seen.insert(fname.as_str()) {
+                        self.reject_duplicate_field(*id, name, fname);
+                        continue;
+                    }
                     let declared = sdef.fields.iter().find(|(n, _)| n == fname);
                     let Some((_, dt)) = declared else {
                         self.reject_unknown_field(*id, name, fname);
                         continue;
                     };
-                    if !self.types_agree(&val_ty, dt) {
+                    if !self.diverges(fval) && !self.types_agree(&val_ty, dt) {
                         self.reject_type_mismatch(fval.id(), dt, &val_ty, "struct field");
                     }
                 }
@@ -396,31 +473,35 @@ impl Checker {
             }
             Expr::Field { id, target, field } => {
                 let t = self.check_expr(target, scope, ret_ty);
-                match &t {
-                    Type::Struct(sname) => {
-                        let sdef = self.structs.get(sname);
-                        if let Some(sdef) = sdef {
-                            let f = sdef.fields.iter().find(|(n, _)| n == field);
-                            match f {
-                                Some((_, ty)) => ty.clone(),
-                                None => {
-                                    self.reject_unknown_field(*id, sname, field);
-                                    Type::Unit
+                if self.diverges(target) {
+                    Type::Unit
+                } else {
+                    match &t {
+                        Type::Struct(sname) => {
+                            let sdef = self.structs.get(sname);
+                            if let Some(sdef) = sdef {
+                                let f = sdef.fields.iter().find(|(n, _)| n == field);
+                                match f {
+                                    Some((_, ty)) => ty.clone(),
+                                    None => {
+                                        self.reject_unknown_field(*id, sname, field);
+                                        Type::Unit
+                                    }
                                 }
+                            } else {
+                                Type::Unit
                             }
-                        } else {
+                        }
+                        _ => {
+                            self.reject_field_non_struct(*id, &t);
                             Type::Unit
                         }
-                    }
-                    _ => {
-                        self.reject_field_non_struct(*id, &t);
-                        Type::Unit
                     }
                 }
             }
             Expr::Cast { id, target, value } => {
                 let v = self.check_expr(value, scope, ret_ty);
-                if !self.cast_valid(&v, target) {
+                if !self.diverges(value) && !self.cast_valid(&v, target) {
                     self.reject_invalid_cast(*id, &v, target, value);
                 }
                 target.clone()
@@ -461,7 +542,7 @@ impl Checker {
             "i64.add" | "i64.sub" | "i64.mul" | "i64.div" | "i64.mod" => {
                 (Type::I64, vec![Type::I64, Type::I64])
             }
-            "i64.gt" | "i64.lt" | "i64.ge" | "i64.le" | "i64.eq" => {
+            "i64.gt" | "i64.lt" | "i64.ge" | "i64.le" | "i64.eq" | "i64.neq" => {
                 (Type::Bool, vec![Type::I64, Type::I64])
             }
             "i64.neg" | "i64.abs" => (Type::I64, vec![Type::I64]),
@@ -486,7 +567,7 @@ impl Checker {
         }
         for (i, (arg, expected)) in args.iter().zip(arg_tys.iter()).enumerate() {
             let arg_ty = self.check_expr(arg, scope, ret_ty);
-            if !self.types_agree(&arg_ty, expected) {
+            if !self.diverges(arg) && !self.types_agree(&arg_ty, expected) {
                 self.reject_call_arg_type(id, op, i, "_", expected, &arg_ty, arg);
             }
         }
@@ -913,6 +994,19 @@ self.rejections.push(Rejection {
             path: format!("{}.{}", sname, field),
             expected: "a field of the struct".into(),
             received: format!("unknown field `{}`", field),
+            context: HashMap::new(),
+            repairs: vec![],
+        });
+    }
+
+    fn reject_duplicate_field(&mut self, id: NodeId, sname: &str, field: &str) {
+        self.rejections.push(Rejection {
+            gate: Gate::Type,
+            kind: "DUPLICATE_FIELD".into(),
+            node: id,
+            path: format!("{}.{}", sname, field),
+            expected: "each struct field exactly once".into(),
+            received: format!("duplicate field `{}`", field),
             context: HashMap::new(),
             repairs: vec![],
         });

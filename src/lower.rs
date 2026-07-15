@@ -1,10 +1,9 @@
 //! Lowering: Aury → LLVM IR → native executable.
 //!
-//! v0.1 lowers the **i64/bool core** plus **str + result(i64,str)** to LLVM IR
-//! text, which `clang`/`llc` assemble to a native binary. vec/struct/rng and
-//! the str-arg builtins beyond concat/len/eq are not yet natively lowered
-//! (clear error); the interpreter remains the backend for those. The runtime
-//! in `runtime/aury_rt.c` backs the string/result operations.
+//! Lowers the scalar core, strings/results, immutable vectors/structs, and
+//! deterministic RNG to LLVM IR text assembled by `clang`. The runtime in
+//! `runtime/aury_rt.c` provides allocation, checked indexing, edge-case integer
+//! operations, RNG state, and generic type-directed value display.
 //!
 //! Value model (type-aware): `lower_expr` returns (value, llvm_type, diverged).
 //! i64/bool/unit → `i64` (bool is 0/1). str/vec/struct/result → `ptr` (boxed,
@@ -12,6 +11,7 @@
 //! to SSA. `return`/`loop` diverge (tracked, like the validator's `diverges`).
 
 use crate::ast::*;
+use crate::interp::Value;
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +27,7 @@ pub struct Lowerer {
     lbl: usize,
     str_n: usize,
     fns: HashMap<String, Sig>,
+    structs: HashMap<String, StructDef>,
     scope: Vec<(String, String, Type)>, // name, slot, Aury type
     retslot: String,
     retty: String,
@@ -171,6 +172,7 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
         lbl: 1,
         str_n: 0,
         fns: HashMap::new(),
+        structs: HashMap::new(),
         scope: Vec::new(),
         retslot: String::new(),
         retty: String::new(),
@@ -178,14 +180,22 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
         str_literals: Vec::new(),
     };
     for item in &module.items {
-        if let ModuleItem::Fn(f) = item {
-            l.fns.insert(
-                f.name.clone(),
-                Sig {
-                    params: f.params.iter().map(|p| p.ty.clone()).collect(),
-                    ret: f.ret.clone(),
-                },
-            );
+        match item {
+            ModuleItem::Fn(f) => {
+                l.fns.insert(
+                    f.name.clone(),
+                    Sig {
+                        params: f.params.iter().map(|p| p.ty.clone()).collect(),
+                        ret: f.ret.clone(),
+                    },
+                );
+            }
+            ModuleItem::Struct(definition) => {
+                l.structs
+                    .entry(definition.name.clone())
+                    .or_insert_with(|| definition.clone());
+            }
+            _ => {}
         }
     }
     l.out.push_str("; Aury native lowering (LLVM IR) - module ");
@@ -193,9 +203,16 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out.push('\n');
     l.out_str("declare i32 @printf(ptr, ...)\n");
     l.out_str("declare void @llvm.trap()\n");
-    l.out_str("declare i64 @llvm.abs.i64(i64, i1)\n");
-    // runtime (str + result)
-    l.out_str("%aury.result = type { i1, i64, ptr }\n");
+    // Uniform 8-byte aggregate slot runtime ABI.
+    l.out_str("declare ptr @aury_box_new(i64)\n");
+    l.out_str("declare ptr @aury_box_slot(ptr, i64)\n");
+    l.out_str("declare ptr @aury_vec_new(i64)\n");
+    l.out_str("declare ptr @aury_vec_slot(ptr, i64)\n");
+    l.out_str("declare void @aury_rng_init(i64)\n");
+    l.out_str("declare i64 @aury_rng_next()\n");
+    l.out_str("declare i64 @aury_i64_div(i64, i64)\n");
+    l.out_str("declare i64 @aury_i64_mod(i64, i64)\n");
+    l.out_str("declare void @aury_value_print(i64, ptr)\n");
     l.out_str("declare ptr @aury_str_concat(ptr, ptr)\n");
     l.out_str("declare i64 @aury_str_eq(ptr, ptr)\n");
     l.out_str("declare ptr @aury_i64_to_str(i64)\n");
@@ -221,7 +238,7 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
                     l.out_str(&format!("; not lowered: {} ({})\n", f.name, l.errors.join("; ")));
                 } else {
                     return Err(format!(
-                        "native lowering (v0.1) only supports the i64/bool/str core; `{}` is reachable and uses unsupported constructs:\n  - {}",
+                        "native lowering failed for reachable function `{}`:\n  - {}",
                         f.name,
                         l.errors.join("\n  - ")
                     ));
@@ -237,82 +254,161 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     Ok(l.out)
 }
 
+fn type_descriptor(module: &Module, ty: &Type) -> Result<String, String> {
+    fn build(module: &Module, ty: &Type, active: &mut HashSet<String>) -> Result<String, String> {
+        Ok(match ty {
+            Type::I64 => "i".into(),
+            Type::Bool => "b".into(),
+            Type::Str => "s".into(),
+            Type::Unit => "u".into(),
+            Type::Vec(inner) => format!("v{}", build(module, inner, active)?),
+            Type::Result(ok, err) => {
+                format!("r{}{}", build(module, ok, active)?, build(module, err, active)?)
+            }
+            Type::Struct(name) => {
+                if !active.insert(name.clone()) {
+                    return Err(format!(
+                        "compile: recursive struct `{}` cannot be represented by a finite native entry type descriptor",
+                        name
+                    ));
+                }
+                let definition = module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        ModuleItem::Struct(definition) if definition.name == *name => {
+                            Some(definition)
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| format!("unknown struct `{}`", name))?;
+                let mut result =
+                    format!("t{}:{}{}:", name.len(), name, definition.fields.len());
+                for (field, field_ty) in &definition.fields {
+                    result.push_str(&format!(
+                        "{}:{}{}",
+                        field.len(),
+                        field,
+                        build(module, field_ty, active)?
+                    ));
+                }
+                active.remove(name);
+                result
+            }
+            Type::Ref { .. } | Type::Region => {
+                return Err(format!("native CLI values of type {:?} are unsupported", ty));
+            }
+        })
+    }
+
+    build(module, ty, &mut HashSet::new())
+}
+
+fn main_fresh(counter: &mut usize) -> String {
+    let result = format!("%m{}", *counter);
+    *counter += 1;
+    result
+}
+
+fn emit_main_value(module: &Module, value: &Value, ty: &Type, globals: &mut String, body: &mut String, counter: &mut usize) -> Result<String, String> {
+    match (ty, value) {
+        (Type::I64, Value::I64(number)) => Ok(number.to_string()),
+        (Type::Bool, Value::Bool(boolean)) => Ok(if *boolean { "1" } else { "0" }.into()),
+        (Type::Unit, Value::Unit) => Ok("0".into()),
+        (Type::Str, Value::Str(string)) => {
+            let id = *counter; *counter += 1;
+            let data = format!("@.argd{}", id);
+            let boxed = format!("@.arg{}", id);
+            emit_string_global(globals, &data, &boxed, string);
+            Ok(boxed)
+        }
+        (Type::Vec(inner), Value::Vec(values)) => {
+            let vector = main_fresh(counter);
+            body.push_str(&format!("  {} = call ptr @aury_vec_new(i64 {})\n", vector, values.len()));
+            for (index, element) in values.iter().enumerate() {
+                let operand = emit_main_value(module, element, inner, globals, body, counter)?;
+                let bits = if llvm_type(inner) == "ptr" {
+                    let bits = main_fresh(counter);
+                    body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, operand)); bits
+                } else { operand };
+                let slot = main_fresh(counter);
+                body.push_str(&format!("  {} = call ptr @aury_vec_slot(ptr {}, i64 {})\n  store i64 {}, ptr {}\n", slot, vector, index, bits, slot));
+            }
+            Ok(vector)
+        }
+        (Type::Struct(name), Value::Struct(value_name, fields)) if name == value_name => {
+            let definition = module.items.iter().find_map(|item| match item {
+                ModuleItem::Struct(definition) if definition.name == *name => Some(definition), _ => None,
+            }).ok_or_else(|| format!("unknown struct `{}`", name))?;
+            let boxed = main_fresh(counter);
+            body.push_str(&format!("  {} = call ptr @aury_box_new(i64 {})\n", boxed, definition.fields.len()));
+            for (index, (field, field_ty)) in definition.fields.iter().enumerate() {
+                let field_value = fields.iter().find(|(candidate, _)| candidate == field).map(|(_, value)| value)
+                    .ok_or_else(|| format!("missing field `{}`", field))?;
+                let operand = emit_main_value(module, field_value, field_ty, globals, body, counter)?;
+                let bits = if llvm_type(field_ty) == "ptr" {
+                    let bits = main_fresh(counter);
+                    body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, operand)); bits
+                } else { operand };
+                let slot = main_fresh(counter);
+                body.push_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 {})\n  store i64 {}, ptr {}\n", slot, boxed, index, bits, slot));
+            }
+            Ok(boxed)
+        }
+        (Type::Result(ok_ty, err_ty), Value::ResultOk(payload))
+        | (Type::Result(ok_ty, err_ty), Value::ResultErr(payload)) => {
+            let is_ok = matches!(value, Value::ResultOk(_));
+            let payload_ty = if is_ok { ok_ty.as_ref() } else { err_ty.as_ref() };
+            let boxed = main_fresh(counter);
+            body.push_str(&format!("  {} = call ptr @aury_box_new(i64 2)\n", boxed));
+            let tag_slot = main_fresh(counter);
+            body.push_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 0)\n  store i64 {}, ptr {}\n", tag_slot, boxed, if is_ok { 1 } else { 0 }, tag_slot));
+            let operand = emit_main_value(module, payload, payload_ty, globals, body, counter)?;
+            let bits = if llvm_type(payload_ty) == "ptr" {
+                let bits = main_fresh(counter);
+                body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, operand)); bits
+            } else { operand };
+            let payload_slot = main_fresh(counter);
+            body.push_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 1)\n  store i64 {}, ptr {}\n", payload_slot, boxed, bits, payload_slot));
+            Ok(boxed)
+        }
+        _ => Err(format!("value {:?} does not match CLI type {:?}", value, ty)),
+    }
+}
+
 /// Build a runnable native program: lower the reachable set from `entry_fn`,
 /// add a C `main` that calls it with `args` and prints the result.
 pub fn lower_program_with_main(module: &Module, entry_fn: &str, args: &[String]) -> Result<String, String> {
     let mut ir = lower_set(module, &reachable(module, entry_fn), false)?;
-    let sig = module
-        .items
-        .iter()
-        .find_map(|it| match it {
-            ModuleItem::Fn(f) if f.name == entry_fn => Some(f.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| format!("entry fn `{}` not found", entry_fn))?;
-    let supported_ret = matches!(sig.ret, Type::I64 | Type::Bool | Type::Str);
-    if !supported_ret {
-        return Err(format!(
-            "compile: entry fn `{}` returns {:?}, only i64/bool/str printable natively",
-            entry_fn, sig.ret
-        ));
+    let function = module.items.iter().find_map(|item| match item {
+        ModuleItem::Fn(function) if function.name == entry_fn => Some(function),
+        _ => None,
+    }).ok_or_else(|| format!("entry fn `{}` not found", entry_fn))?;
+    if function.params.len() != args.len() {
+        return Err(format!("compile: entry fn `{}` takes {} args, got {}", entry_fn, function.params.len(), args.len()));
     }
-    if sig.params.len() != args.len() {
-        return Err(format!(
-            "compile: entry fn `{}` takes {} args, got {}",
-            entry_fn,
-            sig.params.len(),
-            args.len()
-        ));
+    let mut globals = String::new();
+    let mut body = String::new();
+    let mut counter = 0;
+    let mut arguments = Vec::new();
+    for (parameter, text) in function.params.iter().zip(args) {
+        let value = crate::value_io::parse_cli_value(module, &parameter.ty, text)
+            .map_err(|error| format!("compile: arg for `{}`: {}", parameter.name, error))?;
+        let operand = emit_main_value(module, &value, &parameter.ty, &mut globals, &mut body, &mut counter)?;
+        arguments.push(format!("{} {}", llvm_type(&parameter.ty), operand));
     }
-    for p in &sig.params {
-        if !matches!(p.ty, Type::I64 | Type::Bool | Type::Str) {
-            return Err(format!("compile: entry fn `{}` has unsupported param type {:?}", entry_fn, p.ty));
-        }
+    let descriptor = type_descriptor(module, &function.ret)?;
+    globals.push_str(&format!("@.return_type = private constant [{} x i8] c\"{}\"\n", descriptor.len() + 1, llvm_c_string(&descriptor)));
+    ir.push_str(&globals);
+    ir.push_str("define i32 @main() {\nentry:\n  call void @aury_rng_init(i64 12648430)\n");
+    ir.push_str(&body);
+    ir.push_str(&format!("  %r = call {} @aury__{}({})\n", llvm_type(&function.ret), entry_fn, arguments.join(", ")));
+    if llvm_type(&function.ret) == "ptr" {
+        ir.push_str("  %rbits = ptrtoint ptr %r to i64\n  call void @aury_value_print(i64 %rbits, ptr @.return_type)\n");
+    } else {
+        ir.push_str("  call void @aury_value_print(i64 %r, ptr @.return_type)\n");
     }
-    // Build a type-directed argument list. Strings are boxed constants; bools
-    // use the same true/false spelling accepted by `aury run`.
-    let mut arglist: Vec<String> = Vec::new();
-    for (i, p) in sig.params.iter().enumerate() {
-        match p.ty {
-            Type::Str => {
-                let data_name = format!("@.argd{}", i);
-                let boxed_name = format!("@.arg{}", i);
-                emit_string_global(&mut ir, &data_name, &boxed_name, &args[i]);
-                arglist.push(format!("ptr {}", boxed_name));
-            }
-            Type::Bool => {
-                let value = match args[i].as_str() {
-                    "true" => 1,
-                    "false" => 0,
-                    _ => return Err(format!("compile: arg `{}` is not a bool", args[i])),
-                };
-                arglist.push(format!("i64 {}", value));
-            }
-            Type::I64 => {
-                let value: i64 = args[i]
-                    .parse()
-                    .map_err(|_| format!("compile: arg `{}` is not an i64", args[i]))?;
-                arglist.push(format!("i64 {}", value));
-            }
-            _ => unreachable!("entry parameter types were checked above"),
-        }
-    }
-    ir.push_str("define i32 @main() {\nentry:\n");
-    ir.push_str(&format!("  %r = call {} @aury__{}({})\n", llvm_type(&sig.ret), entry_fn, arglist.join(", ")));
-    match sig.ret {
-        Type::Bool => {
-            ir.push_str("  %c = icmp ne i64 %r, 0\n");
-            ir.push_str("  br i1 %c, label %t, label %f\n");
-            ir.push_str("t:\n  call i32 @printf(ptr @.t)\n  ret i32 0\n");
-            ir.push_str("f:\n  call i32 @printf(ptr @.f)\n  ret i32 0\n}\n");
-        }
-        Type::Str => {
-            ir.push_str("  call void @aury_str_print(ptr %r)\n  ret i32 0\n}\n");
-        }
-        _ => {
-            ir.push_str("  call i32 @printf(ptr @.fmt, i64 %r)\n  ret i32 0\n}\n");
-        }
-    }
+    ir.push_str("  ret i32 0\n}\n");
     Ok(ir)
 }
 
@@ -433,14 +529,15 @@ impl Lowerer {
                 }
                 self.lower_expr(tail)
             }
+            // v0 region/copy semantics are explicit immutable-value no-ops.
             Expr::Region { body, .. } => self.lower_expr(body),
             Expr::Copy { value, .. } => self.lower_expr(value),
             Expr::Cast { target, value, .. } => self.lower_cast(target, value),
-            Expr::VecNew { .. } | Expr::Index { .. } | Expr::Len { .. }
-            | Expr::StructNew { .. } | Expr::Field { .. } => {
-                self.err("vec/struct ops not yet supported in native lowering");
-                (Some("0".into()), "i64".into(), false)
-            }
+            Expr::VecNew { ty, elems, .. } => self.lower_vec_new(ty, elems),
+            Expr::Index { target, index, .. } => self.lower_index(target, index),
+            Expr::Len { target, .. } => self.lower_len(target),
+            Expr::StructNew { name, fields, .. } => self.lower_struct_new(name, fields),
+            Expr::Field { target, field, .. } => self.lower_field(target, field),
         }
     }
 
@@ -454,6 +551,112 @@ impl Lowerer {
         self.str_literals
             .push((data_name, boxed_name.clone(), value.to_string()));
         boxed_name
+    }
+
+    fn value_to_bits(&mut self, value: String, llvm_ty: &str) -> String {
+        if llvm_ty == "ptr" {
+            let bits = self.fresh();
+            self.out_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, value));
+            bits
+        } else { value }
+    }
+
+    fn bits_to_value(&mut self, bits: String, ty: &Type) -> (String, String) {
+        let llvm_ty = llvm_type(ty);
+        if llvm_ty == "ptr" {
+            let value = self.fresh();
+            self.out_str(&format!("  {} = inttoptr i64 {} to ptr\n", value, bits));
+            (value, llvm_ty)
+        } else { (bits, llvm_ty) }
+    }
+
+    fn lower_vec_new(&mut self, ty: &Type, elems: &[Expr]) -> (Option<String>, String, bool) {
+        if !matches!(ty, Type::Vec(_)) {
+            self.err("vec-new annotation is not a vector type");
+        }
+        let vector = self.fresh();
+        self.out_str(&format!("  {} = call ptr @aury_vec_new(i64 {})\n", vector, elems.len()));
+        for (index, elem) in elems.iter().enumerate() {
+            let (value, llvm_ty, diverged) = self.lower_expr(elem);
+            if diverged { return (None, String::new(), true); }
+            let bits = self.value_to_bits(value.unwrap(), &llvm_ty);
+            let slot = self.fresh();
+            self.out_str(&format!("  {} = call ptr @aury_vec_slot(ptr {}, i64 {})\n", slot, vector, index));
+            self.out_str(&format!("  store i64 {}, ptr {}\n", bits, slot));
+        }
+        (Some(vector), "ptr".into(), false)
+    }
+
+    fn lower_index(&mut self, target: &Expr, index: &Expr) -> (Option<String>, String, bool) {
+        let element_ty = match self.infer_type(target) {
+            Type::Vec(inner) => *inner,
+            _ => { self.err("idx target is not a vector"); Type::Unit }
+        };
+        let (vector, _, vector_diverged) = self.lower_expr(target);
+        if vector_diverged { return (None, String::new(), true); }
+        let (index_value, _, index_diverged) = self.lower_expr(index);
+        if index_diverged { return (None, String::new(), true); }
+        let slot = self.fresh();
+        self.out_str(&format!("  {} = call ptr @aury_vec_slot(ptr {}, i64 {})\n", slot, vector.unwrap(), index_value.unwrap()));
+        let bits = self.fresh();
+        self.out_str(&format!("  {} = load i64, ptr {}\n", bits, slot));
+        let (value, llvm_ty) = self.bits_to_value(bits, &element_ty);
+        (Some(value), llvm_ty, false)
+    }
+
+    fn lower_len(&mut self, target: &Expr) -> (Option<String>, String, bool) {
+        let (vector, _, diverged) = self.lower_expr(target);
+        if diverged { return (None, String::new(), true); }
+        let len = self.fresh();
+        self.out_str(&format!("  {} = load i64, ptr {}\n", len, vector.unwrap()));
+        (Some(len), "i64".into(), false)
+    }
+
+    fn lower_struct_new(&mut self, name: &str, fields: &[(String, Expr)]) -> (Option<String>, String, bool) {
+        let Some(definition) = self.structs.get(name).cloned() else {
+            self.err(&format!("unknown struct `{}`", name));
+            return (Some("null".into()), "ptr".into(), false);
+        };
+        let boxed = self.fresh();
+        self.out_str(&format!("  {} = call ptr @aury_box_new(i64 {})\n", boxed, definition.fields.len()));
+        // Evaluate source fields left-to-right, store by declared-field index.
+        for (field, expression) in fields {
+            let (value, llvm_ty, diverged) = self.lower_expr(expression);
+            if diverged { return (None, String::new(), true); }
+            let Some(index) = definition.fields.iter().position(|(candidate, _)| candidate == field) else {
+                self.err(&format!("unknown field `{}` on `{}`", field, name));
+                continue;
+            };
+            let bits = self.value_to_bits(value.unwrap(), &llvm_ty);
+            let slot = self.fresh();
+            self.out_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 {})\n", slot, boxed, index));
+            self.out_str(&format!("  store i64 {}, ptr {}\n", bits, slot));
+        }
+        (Some(boxed), "ptr".into(), false)
+    }
+
+    fn lower_field(&mut self, target: &Expr, field: &str) -> (Option<String>, String, bool) {
+        let Type::Struct(name) = self.infer_type(target) else {
+            self.err("get target is not a struct");
+            return (Some("0".into()), "i64".into(), false);
+        };
+        let Some(definition) = self.structs.get(&name).cloned() else {
+            self.err(&format!("unknown struct `{}`", name));
+            return (Some("0".into()), "i64".into(), false);
+        };
+        let Some((index, (_, field_ty))) = definition.fields.iter().enumerate().find(|(_, (candidate, _))| candidate == field) else {
+            self.err(&format!("unknown field `{}` on `{}`", field, name));
+            return (Some("0".into()), "i64".into(), false);
+        };
+        let field_ty = field_ty.clone();
+        let (boxed, _, diverged) = self.lower_expr(target);
+        if diverged { return (None, String::new(), true); }
+        let slot = self.fresh();
+        self.out_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 {})\n", slot, boxed.unwrap(), index));
+        let bits = self.fresh();
+        self.out_str(&format!("  {} = load i64, ptr {}\n", bits, slot));
+        let (value, llvm_ty) = self.bits_to_value(bits, &field_ty);
+        (Some(value), llvm_ty, false)
     }
 
     fn lower_call(&mut self, op: &str, args: &[Expr]) -> (Option<String>, String, bool) {
@@ -484,45 +687,61 @@ impl Lowerer {
     }
 
     fn lower_builtin(&mut self, op: &str, args: &[Expr]) -> Option<(Option<String>, String, bool)> {
-        // two i64 operands
-        let two = |l: &mut Self| -> Option<(String, String)> {
+        let is_binary_scalar = matches!(
+            op,
+            "i64.add"
+                | "i64.sub"
+                | "i64.mul"
+                | "i64.div"
+                | "i64.mod"
+                | "i64.gt"
+                | "i64.lt"
+                | "i64.ge"
+                | "i64.le"
+                | "i64.eq"
+                | "i64.neq"
+                | "bool.and"
+                | "bool.or"
+                | "bool.eq"
+        );
+        // Scalar builtins evaluate left-to-right. A `return` in either operand
+        // is a successfully lowered divergent call, not an unknown builtin.
+        let binary = if is_binary_scalar {
             if args.len() != 2 {
                 return None;
             }
-            let (a, aty, da) = l.lower_expr(&args[0]);
-            let (b, bty, db) = l.lower_expr(&args[1]);
-            if da || db {
-                return None;
+            let (a, aty, da) = self.lower_expr(&args[0]);
+            if da {
+                return Some((None, String::new(), true));
+            }
+            let (b, bty, db) = self.lower_expr(&args[1]);
+            if db {
+                return Some((None, String::new(), true));
             }
             if aty != "i64" || bty != "i64" {
-                l.err(&format!("`{}` needs i64 args", op));
+                self.err(&format!("`{}` needs scalar args", op));
             }
             Some((a.unwrap(), b.unwrap()))
+        } else {
+            None
         };
         match op {
             "i64.add" | "i64.sub" | "i64.mul" => {
-                let (a, b) = two(self)?;
+                let (a, b) = binary.clone().unwrap();
                 let r = self.fresh();
                 let k = if op == "i64.add" { "add" } else if op == "i64.sub" { "sub" } else { "mul" };
                 self.out_str(&format!("  {} = {} i64 {}, {}\n", r, k, a, b));
                 Some((Some(r), "i64".into(), false))
             }
             "i64.div" | "i64.mod" => {
-                let (a, b) = two(self)?;
-                let cz = self.fresh();
-                self.out_str(&format!("  {} = icmp eq i64 {}, 0\n", cz, b));
-                let trap = self.fresh_lbl("trap");
-                let ok = self.fresh_lbl("ok");
-                self.out_str(&format!("  br i1 {}, label %{}, label %{}\n", cz, trap, ok));
-                self.out_str(&format!("{}:\n  call void @llvm.trap()\n  unreachable\n", trap));
-                self.out_str(&format!("{}:\n", ok));
+                let (a, b) = binary.clone().unwrap();
                 let r = self.fresh();
-                let k = if op == "i64.div" { "sdiv" } else { "srem" };
-                self.out_str(&format!("  {} = {} i64 {}, {}\n", r, k, a, b));
+                let helper = if op == "i64.div" { "aury_i64_div" } else { "aury_i64_mod" };
+                self.out_str(&format!("  {} = call i64 @{}(i64 {}, i64 {})\n", r, helper, a, b));
                 Some((Some(r), "i64".into(), false))
             }
             "i64.gt" | "i64.lt" | "i64.ge" | "i64.le" | "i64.eq" | "i64.neq" => {
-                let (a, b) = two(self)?;
+                let (a, b) = binary.clone().unwrap();
                 let pred = match op {
                     "i64.gt" => "sgt", "i64.lt" => "slt", "i64.ge" => "sge",
                     "i64.le" => "sle", "i64.eq" => "eq", _ => "ne",
@@ -547,12 +766,17 @@ impl Lowerer {
                 let (a, aty, d) = self.lower_expr(&args[0]);
                 if d { return Some((None, String::new(), true)); }
                 if aty != "i64" { self.err("i64.abs needs i64"); }
+                let value = a.unwrap();
+                let negative = self.fresh();
+                self.out_str(&format!("  {} = icmp slt i64 {}, 0\n", negative, value));
+                let negated = self.fresh();
+                self.out_str(&format!("  {} = sub i64 0, {}\n", negated, value));
                 let r = self.fresh();
-                self.out_str(&format!("  {} = call i64 @llvm.abs.i64(i64 {}, i1 1)\n", r, a.unwrap()));
+                self.out_str(&format!("  {} = select i1 {}, i64 {}, i64 {}\n", r, negative, negated, value));
                 Some((Some(r), "i64".into(), false))
             }
             "bool.and" | "bool.or" => {
-                let (a, b) = two(self)?;
+                let (a, b) = binary.clone().unwrap();
                 let r = self.fresh();
                 let k = if op == "bool.and" { "and" } else { "or" };
                 self.out_str(&format!("  {} = {} i64 {}, {}\n", r, k, a, b));
@@ -568,7 +792,7 @@ impl Lowerer {
                 Some((Some(r), "i64".into(), false))
             }
             "bool.eq" => {
-                let (a, b) = two(self)?;
+                let (a, b) = binary.unwrap();
                 let c = self.fresh();
                 self.out_str(&format!("  {} = icmp eq i64 {}, {}\n", c, a, b));
                 let r = self.fresh();
@@ -642,11 +866,18 @@ impl Lowerer {
                 let (a, aty, d) = self.lower_expr(&args[0]);
                 if d { return Some((None, String::new(), true)); }
                 if aty != "ptr" { self.err("result.is_ok needs a result"); }
-                // {i1 ok, ...} — load field 0 (i1).
-                let c = self.fresh();
-                self.out_str(&format!("  {} = load i1, ptr {}\n", c, a.unwrap()));
+                let tag = self.fresh();
+                self.out_str(&format!("  {} = load i64, ptr {}\n", tag, a.unwrap()));
+                let condition = self.fresh();
+                self.out_str(&format!("  {} = icmp ne i64 {}, 0\n", condition, tag));
                 let r = self.fresh();
-                self.out_str(&format!("  {} = zext i1 {} to i64\n", r, c));
+                self.out_str(&format!("  {} = zext i1 {} to i64\n", r, condition));
+                Some((Some(r), "i64".into(), false))
+            }
+            "rng.next" | "rng.i64" => {
+                if !args.is_empty() { return None; }
+                let r = self.fresh();
+                self.out_str(&format!("  {} = call i64 @aury_rng_next()\n", r));
                 Some((Some(r), "i64".into(), false))
             }
             _ => None,
@@ -672,21 +903,20 @@ impl Lowerer {
                 (Some(r), "ptr".into(), false)
             }
             ("ptr", "i64") => {
-                // str -> i64: parse to result, trap if !ok, else load val field.
+                // str -> i64: parse to generic {tag,payload} slots.
                 let res = self.fresh();
                 self.out_str(&format!("  {} = call ptr @aury_i64_parse_strict(ptr {})\n", res, v));
+                let tag = self.fresh();
+                self.out_str(&format!("  {} = load i64, ptr {}\n", tag, res));
                 let ok = self.fresh();
-                self.out_str(&format!("  {} = load i1, ptr {}\n", ok, res));
+                self.out_str(&format!("  {} = icmp ne i64 {}, 0\n", ok, tag));
                 let good = self.fresh_lbl("castok");
                 let bad = self.fresh_lbl("castbad");
                 self.out_str(&format!("  br i1 {}, label %{}, label %{}\n", ok, good, bad));
                 self.out_str(&format!("{}:\n  call void @llvm.trap()\n  unreachable\n", bad));
                 self.out_str(&format!("{}:\n", good));
                 let vp = self.fresh();
-                self.out_str(&format!(
-                    "  {} = getelementptr inbounds %aury.result, ptr {}, i64 0, i32 1\n",
-                    vp, res
-                ));
+                self.out_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 1)\n", vp, res));
                 let r = self.fresh();
                 self.out_str(&format!("  {} = load i64, ptr {}\n", r, vp));
                 (Some(r), "i64".into(), false)
@@ -962,7 +1192,13 @@ impl Lowerer {
             },
             Expr::Len { .. } => Type::I64,
             Expr::StructNew { name, .. } => Type::Struct(name.clone()),
-            Expr::Field { .. } => Type::I64, // best-effort; full struct-field typing needs defs
+            Expr::Field { target, field, .. } => match self.infer_env(target, env) {
+                Type::Struct(name) => self.structs.get(&name)
+                    .and_then(|definition| definition.fields.iter().find(|(candidate, _)| candidate == field))
+                    .map(|(_, ty)| ty.clone())
+                    .unwrap_or(Type::Unit),
+                _ => Type::Unit,
+            },
         }
     }
     fn infer_match_type(&self, arms: &[MatchArm], scrut_ty: &Type) -> Type {
@@ -988,15 +1224,37 @@ impl Lowerer {
     fn expr_diverges(expr: &Expr) -> bool {
         match expr {
             Expr::Return { .. } | Expr::Loop { .. } => true,
-            Expr::Block { tail, .. } => Self::expr_diverges(tail),
-            Expr::If { then, els, .. } => {
-                Self::expr_diverges(then) && Self::expr_diverges(els)
+            Expr::Let { init, body, .. } => {
+                Self::expr_diverges(init) || Self::expr_diverges(body)
             }
-            Expr::Match { arms, .. } => {
-                !arms.is_empty() && arms.iter().all(|arm| Self::expr_diverges(&arm.body))
+            Expr::Call { args, .. } => args.iter().any(Self::expr_diverges),
+            Expr::If { cond, then, els, .. } => {
+                Self::expr_diverges(cond)
+                    || (Self::expr_diverges(then) && Self::expr_diverges(els))
             }
-            Expr::Let { body, .. } | Expr::Region { body, .. } => Self::expr_diverges(body),
-            _ => false,
+            Expr::Match { scrut, arms, .. } => {
+                Self::expr_diverges(scrut)
+                    || (!arms.is_empty()
+                        && arms.iter().all(|arm| Self::expr_diverges(&arm.body)))
+            }
+            Expr::Block { stmts, tail, .. } => {
+                stmts.iter().any(Self::expr_diverges) || Self::expr_diverges(tail)
+            }
+            Expr::Region { body, .. } => Self::expr_diverges(body),
+            Expr::Copy { value, .. } | Expr::Cast { value, .. } => {
+                Self::expr_diverges(value)
+            }
+            Expr::VecNew { elems, .. } => elems.iter().any(Self::expr_diverges),
+            Expr::Index { target, index, .. } => {
+                Self::expr_diverges(target) || Self::expr_diverges(index)
+            }
+            Expr::Len { target, .. } | Expr::Field { target, .. } => {
+                Self::expr_diverges(target)
+            }
+            Expr::StructNew { fields, .. } => {
+                fields.iter().any(|(_, value)| Self::expr_diverges(value))
+            }
+            Expr::Lit { .. } | Expr::Ref { .. } => false,
         }
     }
 

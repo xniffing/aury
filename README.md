@@ -31,15 +31,15 @@ repair signals.
 | Closed repair loop (auto-apply lowest-cost admissible patch) | ✅ `src/loop_driver.rs` |
 | **Native lowering: Aury → LLVM IR → executable (via clang)** | ✅ `src/lower.rs` |
 
-The MLIR/LLVM codegen is deliberately stubbed — per the proposal, codegen is
-the part we *don't* build ourselves, and it requires LLVM installed. The
-interpreter is sufficient to demonstrate the whole generate→repair→test loop.
+The native backend emits LLVM IR and uses `clang` plus `runtime/aury_rt.c`.
+It supports the scalar core, strings/results, immutable vectors and structs,
+and deterministic SplitMix64 RNG with interpreter-equivalent output.
 
 ## Build & test
 
 ```bash
 cargo build
-cargo test        # 3 unit + 9 integration tests, 0 warnings
+cargo test        # unit, validation, interpreter, and native parity coverage
 ```
 
 ## The headline demo: the loop closes automatically
@@ -97,9 +97,9 @@ is sound — no false positives on correct code — because it's structural
   for humans *and* models.
 - **Effects as capability-gated effect rows.** A pure function calling an
   effectful op is statically rejected with an `add_capability` repair.
-- **No undefined behavior at the Aury layer.** Integer overflow traps unless
-  explicitly wrapped; div/mod by zero traps; OOB traps. Semantics are defined
-  *before* LLVM.
+- **No undefined behavior at the Aury layer.** Integer arithmetic has defined
+  wrapping behavior (including `MIN / -1`, negation, and absolute value), while
+  div/mod by zero and vector OOB access trap. Semantics are defined before LLVM.
 
 ## AI authoring surface: JSON ingest
 
@@ -136,7 +136,7 @@ $ printf '(module m (fn fact ... (call fact (call i64.sub (ref n) 1)' | aury loo
 
 ```
 aury validate <file>          type/effect/region checks; print rejections as JSON
-aury run <file> <fn> [args]   validate then run <fn> with i64/bool/str args
+aury run <file> <fn> [args]   validate then run <fn>; aggregates use typed JSON args
 aury test <file> [seed]        validate then run property tests (shrinking + vacuity)
 aury loop <file> [seed]        the closed repair loop (auto-apply admissible patches;
                               also repairs parse errors by closing unterminated lists)
@@ -147,9 +147,19 @@ aury ingest <file.json> [out] JSON AST → canonical .aury (the AI authoring sur
 aury emit-json <file.aury>    .aury → array-form JSON (round-trip)
 ```
 
+### Native aggregate ABI and CLI values
+
+Native vectors are boxed `{i64 len, ptr slots}` and structs use contiguous
+8-byte slots in declared-field order. Pointer-valued fields are stored as i64
+bits. Aggregate CLI arguments are type-directed JSON: arrays for vectors,
+objects for structs, and `{"ok": value}` / `{"err": value}` for results;
+scalar argument syntax is unchanged. `region` and `copy` deliberately retain
+v0's interpreter-equivalent immutable-value no-op semantics rather than
+claiming unsafe arena lifetimes.
+
 ## What v0 explicitly does *not* do (honest scope)
 
-- Real MLIR/LLVM codegen (stubbed; the interpreter is the backend).
+- MLIR-based codegen (native lowering currently emits LLVM IR text directly).
 - Self-hosting (the compiler is Rust).
 - Shared regions + sync primitives, async, traits, parametric types (v1).
 - General-purpose stdlib / ecosystem (not a goal — Aury targets
@@ -167,7 +177,7 @@ src/validate.rs    type/effect/region checker emitting rejections
 src/spec.rs        contracts, property tests, shrinking, vacuity check
 src/json.rs        JSON authoring surface → canonical Sexpr (the AI interface)
 src/interp.rs      tree-walking interpreter (v0 backend)
-src/lower.rs       MLIR lowering sketch (swappable for real MLIR/LLVM)
+src/lower.rs       LLVM lowering and generated native entry wrapper
 src/loop_driver.rs the closed repair loop (now covers parse errors too)
 examples/*.aury     calculator, broken, effects-bad, buggy-max, structs, rng-demo
 tests/integration.rs  end-to-end tests of the whole loop

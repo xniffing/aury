@@ -45,6 +45,17 @@ enum Flow {
     Return(Value),
 }
 
+/// Evaluate a child expression while preserving an enclosing `return`.
+/// Keeping this as a macro makes every expression arm use the same rule.
+macro_rules! value_or_return {
+    ($interp:expr, $expr:expr, $scope:expr) => {
+        match $interp.eval($expr, $scope)? {
+            Flow::Value(value) => value,
+            Flow::Return(value) => return Ok(Flow::Return(value)),
+        }
+    };
+}
+
 /// A runtime error (trapped condition: divide by zero, out of bounds, etc.).
 #[derive(Debug)]
 pub struct InterpError(pub String);
@@ -74,7 +85,7 @@ impl Interp {
                     fns.insert(f.name.clone(), f.clone());
                 }
                 ModuleItem::Struct(s) => {
-                    structs.insert(s.name.clone(), s.clone());
+                    structs.entry(s.name.clone()).or_insert_with(|| s.clone());
                 }
                 _ => {}
             }
@@ -122,29 +133,27 @@ impl Interp {
                 Ok(Flow::Value(v))
             }
             Expr::Let { name, init, body, .. } => {
-                let v = match self.eval(init, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
-                scope.insert(name.clone(), v);
-                let r = self.eval(body, scope);
-                scope.remove(name);
-                r
+                let v = value_or_return!(self, init, scope);
+                let previous = scope.insert(name.clone(), v);
+                let result = self.eval(body, scope);
+                if let Some(previous) = previous {
+                    scope.insert(name.clone(), previous);
+                } else {
+                    scope.remove(name);
+                }
+                result
             }
             Expr::Call { op, args, .. } => {
                 let mut vals = Vec::with_capacity(args.len());
                 for a in args {
-                    let v = match self.eval(a, scope)? {
-                        Flow::Value(v) | Flow::Return(v) => v,
-                    };
+                    let v = value_or_return!(self, a, scope);
                     vals.push(v);
                 }
                 let v = self.eval_call(op, vals)?;
                 Ok(Flow::Value(v))
             }
             Expr::If { cond, then, els, .. } => {
-                let c = match self.eval(cond, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
+                let c = value_or_return!(self, cond, scope);
                 match c {
                     Value::Bool(true) => self.eval(then, scope),
                     Value::Bool(false) => self.eval(els, scope),
@@ -155,9 +164,7 @@ impl Interp {
                 }
             }
             Expr::Match { scrut, arms, .. } => {
-                let s = match self.eval(scrut, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
+                let s = value_or_return!(self, scrut, scope);
                 for arm in arms {
                     if let Some(bindings) = match_pattern(&arm.pattern, &s) {
                         let mut arm_scope = scope.clone();
@@ -178,9 +185,7 @@ impl Interp {
                 }
             }
             Expr::Return { value, .. } => {
-                let v = match self.eval(value, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
+                let v = value_or_return!(self, value, scope);
                 Ok(Flow::Return(v))
             }
             Expr::Block { stmts, tail, .. } => {
@@ -201,20 +206,14 @@ impl Interp {
             Expr::VecNew { elems, .. } => {
                 let mut vs = Vec::with_capacity(elems.len());
                 for el in elems {
-                    let v = match self.eval(el, scope)? {
-                        Flow::Value(v) | Flow::Return(v) => v,
-                    };
+                    let v = value_or_return!(self, el, scope);
                     vs.push(v);
                 }
                 Ok(Flow::Value(Value::Vec(vs)))
             }
             Expr::Index { target, index, .. } => {
-                let t = match self.eval(target, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
-                let i = match self.eval(index, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
+                let t = value_or_return!(self, target, scope);
+                let i = value_or_return!(self, index, scope);
                 let (Value::Vec(vs), Value::I64(idx)) = (&t, &i) else {
                     return Err(InterpError("idx: bad operands".into()));
                 };
@@ -224,28 +223,31 @@ impl Interp {
                 Ok(Flow::Value(vs[*idx as usize].clone()))
             }
             Expr::Len { target, .. } => {
-                let t = match self.eval(target, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
+                let t = value_or_return!(self, target, scope);
                 match t {
                     Value::Vec(vs) => Ok(Flow::Value(Value::I64(vs.len() as i64))),
                     _ => Err(InterpError("len: not a vec".into())),
                 }
             }
             Expr::StructNew { name, fields, .. } => {
-                let mut vals = Vec::new();
+                // Evaluate source expressions left-to-right, then normalize the
+                // immutable value to declared-field order (the native slot ABI).
+                let mut evaluated = Vec::new();
                 for (fname, fval) in fields {
-                    let v = match self.eval(fval, scope)? {
-                        Flow::Value(v) | Flow::Return(v) => v,
-                    };
-                    vals.push((fname.clone(), v));
+                    let v = value_or_return!(self, fval, scope);
+                    evaluated.push((fname.clone(), v));
                 }
+                let definition = self.structs.get(name)
+                    .ok_or_else(|| InterpError(format!("unknown struct {}", name)))?;
+                let vals = definition.fields.iter().map(|(field, _)| {
+                    evaluated.iter().find(|(candidate, _)| candidate == field)
+                        .map(|(_, value)| (field.clone(), value.clone()))
+                        .ok_or_else(|| InterpError(format!("missing field {}", field)))
+                }).collect::<Result<Vec<_>, _>>()?;
                 Ok(Flow::Value(Value::Struct(name.clone(), vals)))
             }
             Expr::Field { target, field, .. } => {
-                let t = match self.eval(target, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
+                let t = value_or_return!(self, target, scope);
                 match t {
                     Value::Struct(_, fs) => {
                         for (n, v) in fs {
@@ -259,9 +261,7 @@ impl Interp {
                 }
             }
             Expr::Cast { target, value, .. } => {
-                let v = match self.eval(value, scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                };
+                let v = value_or_return!(self, value, scope);
                 self.eval_cast(target, v)
             }
         }
@@ -293,8 +293,8 @@ impl Interp {
             "i64.le" => Value::Bool(two_i64(&args)?.0 <= two_i64(&args)?.1),
             "i64.eq" => Value::Bool(two_i64(&args)?.0 == two_i64(&args)?.1),
             "i64.neq" => Value::Bool(two_i64(&args)?.0 != two_i64(&args)?.1),
-            "i64.neg" => Value::I64(-one_i64(&args)?),
-            "i64.abs" => Value::I64(one_i64(&args)?.abs()),
+            "i64.neg" => Value::I64(one_i64(&args)?.wrapping_neg()),
+            "i64.abs" => Value::I64(one_i64(&args)?.wrapping_abs()),
             "i64.from_str" | "i64.parse" => match &args[0] {
                 Value::Str(s) => match s.trim().parse::<i64>() {
                     Ok(n) => Value::ResultOk(Box::new(Value::I64(n))),
@@ -320,7 +320,13 @@ impl Interp {
                 _ => return Err(InterpError("result.is_ok: not a result".into())),
             },
             "rng.next" | "rng.i64" => {
-                // consume a region arg, ignore it; produce deterministic next.
+                if !args.is_empty() {
+                    return Err(InterpError(format!(
+                        "arity mismatch in `{}`: expected 0 got {}",
+                        op,
+                        args.len()
+                    )));
+                }
                 let v = self.next_rand();
                 Value::I64(v as i64)
             }

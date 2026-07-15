@@ -3,7 +3,10 @@
 use aury::repair::ValidationOutcome;
 use aury::validate::check_module;
 use aury::{ast::build_module, interp::Interp, lower_sketch::lower_to_mlir_sketch, sexpr::parse};
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const USAGE: &str = "\
 aury v0 — an AI-oriented language co-designed with an LLM repair loop
@@ -13,11 +16,14 @@ USAGE:
 
 COMMANDS:
   validate <file>            Run type/effect/region checks; print rejections as JSON.
-  run <file> <fn> [args...]  Validate then run function <fn> with typed scalar args.
+  run <file> <fn> [args...]  Validate then run <fn>; composites use typed JSON args.
   test <file> [seed]         Validate then run property tests with shrinking + vacuity check.
   loop <file> [seed]         Run the closed repair loop: validate → apply admissible
                             patches → re-validate, until accept or budget exhaustion.
   lower <file>               Print the MLIR lowering sketch (structural preview).
+  ll <file> [out.ll]         Emit validated LLVM IR text.
+  compile <file> <fn> [args...] [-o out]
+                             Build with clang, run, and print the native result.
   json <file>                Like `validate` but print one JSON object per rejection.
   ingest <file.json> [out]   Convert a JSON AST (the AI authoring surface) to the
                             canonical s-expr form, validate it, and write <out>.aury.
@@ -30,6 +36,40 @@ EXAMPLES:
   aury loop examples/broken.aury 12345
   aury ingest examples/gcd.json examples/gcd.aury
 ";
+
+const NATIVE_RUNTIME_SOURCE: &str = include_str!("../runtime/aury_rt.c");
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn write_unique_temp_file(stem: &str, extension: &str, contents: &str) -> Result<PathBuf, String> {
+    let safe_stem: String = stem
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .collect();
+    for _ in 0..100 {
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "aury_{}_{}_{}.{}",
+            std::process::id(),
+            sequence,
+            safe_stem,
+            extension
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(contents.as_bytes())
+                    .map_err(|error| format!("write {}: {}", path.display(), error))?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create {}: {}", path.display(), error)),
+        }
+    }
+    Err("could not create a unique native compilation temporary file".into())
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -128,7 +168,7 @@ fn cmd_run(args: &[String]) -> Result<ExitCode, String> {
     let vals = parse_fn_args(&m, fn_name, arg_strs)?;
     match interp.call_fn(fn_name, vals) {
         Ok(v) => {
-            println!("{}", show_value(&v));
+            println!("{}", aury::value_io::show_value(&v));
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
@@ -273,32 +313,40 @@ fn cmd_compile(args: &[String]) -> Result<ExitCode, String> {
     }
     let raw_args: Vec<String> = arg_strs.iter().map(|arg| (*arg).clone()).collect();
     let ir = aury::lower::lower_program_with_main(&m, entry, &raw_args)?;
-    let ll = std::env::temp_dir().join(format!("aury_{}.ll", entry));
-    std::fs::write(&ll, &ir).map_err(|e| format!("write ll: {}", e))?;
+    let ll = write_unique_temp_file(entry, "ll", &ir)?;
     let exe = out.unwrap_or_else(|| {
         let p = path.trim_end_matches(".aury");
         format!("{}.{}.exe", p, entry)
     });
-    // Assemble + link with clang (also runs mem2reg + optimization). Link the
-    // Aury runtime (str/result ops) alongside the generated IR.
-    let rt = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
+    // The runtime is embedded in the CLI binary so installed `aury` binaries
+    // do not depend on the source checkout remaining at CARGO_MANIFEST_DIR.
+    let runtime_c = write_unique_temp_file(&format!("rt_{}", entry), "c", NATIVE_RUNTIME_SOURCE)?;
     let status = std::process::Command::new("clang")
         .arg("-O2")
         .arg(&ll)
-        .arg(&rt)
+        .arg(&runtime_c)
         .arg("-o")
         .arg(&exe)
         .output()
         .map_err(|e| format!("clang: {} (is clang installed?)", e))?;
+    let _ = std::fs::remove_file(&runtime_c);
     if !status.status.success() {
         eprintln!("clang failed:\n{}", String::from_utf8_lossy(&status.stderr));
         eprintln!("IR written to {:?}", ll);
         return Ok(ExitCode::from(1));
     }
-    // Run the native binary.
-    let status = std::process::Command::new(&exe)
+    let _ = std::fs::remove_file(&ll);
+    // Command lookup does not search the current directory. Prefix a bare
+    // relative output name with `./`, while preserving absolute/path outputs.
+    let executable_path = std::path::Path::new(&exe);
+    let run_path = if executable_path.components().count() == 1 {
+        std::path::Path::new(".").join(executable_path)
+    } else {
+        executable_path.to_path_buf()
+    };
+    let status = std::process::Command::new(&run_path)
         .output()
-        .map_err(|e| format!("run {}: {}", exe, e))?;
+        .map_err(|e| format!("run {}: {}", run_path.display(), e))?;
     print!("{}", String::from_utf8_lossy(&status.stdout));
     if !status.status.success() {
         eprintln!("native exit code: {:?}", status.status.code());
@@ -370,8 +418,6 @@ fn parse_fn_args(
     args: &[String],
 ) -> Result<Vec<aury::interp::Value>, String> {
     use aury::ast::ModuleItem;
-    use aury::interp::Value;
-    use aury::types::Type;
 
     let function = module
         .items
@@ -394,46 +440,9 @@ fn parse_fn_args(
         .params
         .iter()
         .zip(args)
-        .map(|(param, arg)| match param.ty {
-            Type::I64 => arg
-                .parse::<i64>()
-                .map(Value::I64)
-                .map_err(|_| format!("arg `{}` for `{}` is not an i64", arg, param.name)),
-            Type::Bool => match arg.as_str() {
-                "true" => Ok(Value::Bool(true)),
-                "false" => Ok(Value::Bool(false)),
-                _ => Err(format!("arg `{}` for `{}` is not a bool", arg, param.name)),
-            },
-            Type::Str => Ok(Value::Str(arg.clone())),
-            _ => Err(format!(
-                "CLI arguments of type {:?} are not supported for `{}`",
-                param.ty, param.name
-            )),
+        .map(|(param, arg)| {
+            aury::value_io::parse_cli_value(module, &param.ty, arg)
+                .map_err(|error| format!("arg for `{}`: {}", param.name, error))
         })
         .collect()
-}
-
-fn show_value(v: &aury::interp::Value) -> String {
-    use aury::interp::Value;
-    match v {
-        Value::I64(n) => format!("{}", n),
-        Value::Bool(b) => format!("{}", b),
-        Value::Str(s) => format!("{:?}", s),
-        Value::Unit => "unit".into(),
-        Value::Vec(vs) => format!(
-            "[{}]",
-            vs.iter().map(show_value).collect::<Vec<_>>().join(", ")
-        ),
-        Value::Struct(name, fs) => format!(
-            "{}{{{}}}",
-            name,
-            fs.iter()
-                .map(|(n, v)| format!("{}: {}", n, show_value(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Value::Region(_) => "region".into(),
-        Value::ResultOk(v) => format!("ok({})", show_value(v)),
-        Value::ResultErr(v) => format!("err({})", show_value(v)),
-    }
 }

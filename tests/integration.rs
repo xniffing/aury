@@ -291,8 +291,9 @@ fn native_lowering_matches_interpreter_for_numeric_core() {
         let ll = std::env::temp_dir().join("aury_test_gcd.ll");
         std::fs::write(&ll, &ir).unwrap();
         let exe = std::env::temp_dir().join("aury_test_gcd.exe");
+        let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
         let st = std::process::Command::new("clang")
-            .args(["-O2", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+            .args(["-O2", ll.to_str().unwrap(), &runtime, "-o", exe.to_str().unwrap()])
             .output()
             .unwrap();
         assert!(st.status.success(), "clang failed:\n{}", String::from_utf8_lossy(&st.stderr));
@@ -384,5 +385,289 @@ fn native_lowering_supports_str_result_and_typed_control_flow() {
         let output = std::process::Command::new(&exe).output().unwrap();
         assert!(output.status.success(), "native {} failed", entry);
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{}", entry);
+    }
+}
+
+#[test]
+fn native_aggregate_rng_and_edge_parity_matrix() {
+    let src = std::fs::read_to_string("tests/native_parity.aury").unwrap();
+    let m = module(&src);
+    assert!(check_module(&m).is_accepted());
+    if std::process::Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
+    let cases: Vec<(&str, Vec<String>)> = vec![
+        ("vec-id", vec!["[1,2,-3]".into()]),
+        ("vec-at", vec![r#"["a","b"]"#.into(), "1".into()]),
+        ("vec-size", vec!["[[1,2],[]]".into()]),
+        ("vec-sum-from", vec!["[1,2,3,4]".into(), "0".into()]),
+        ("empty", vec![]),
+        ("packet-id", vec![r#"{"name":"x","values":[1,-2],"nested":[[true,false],[]]}"#.into()]),
+        ("packet-name", vec![r#"{"name":"x","values":[1,-2],"nested":[[true,false],[]]}"#.into()]),
+        ("branch-vector", vec!["true".into()]),
+        ("branch-vector", vec!["false".into()]),
+        ("branch-packet", vec!["true".into()]),
+        ("branch-packet", vec!["false".into()]),
+        ("made", vec![]),
+        ("copied", vec![]),
+        ("random-pair", vec![]),
+        ("result-id", vec![r#"{"ok":[5,6]}"#.into()]),
+        ("result-id", vec![r#"{"err":{"name":"bad","values":[],"nested":[]}}"#.into()]),
+        ("unit-value", vec![]),
+        ("parse-value", vec!["42".into()]),
+        ("parse-value", vec!["nope".into()]),
+        ("edge-div", vec![]),
+        ("edge-mod", vec![]),
+        ("edge-neg", vec![]),
+        ("edge-abs", vec![]),
+        ("nested-return", vec![]),
+    ];
+    let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
+    for (index, (entry, args)) in cases.into_iter().enumerate() {
+        let function = m.items.iter().find_map(|item| match item {
+            aury::ast::ModuleItem::Fn(function) if function.name == entry => Some(function),
+            _ => None,
+        }).unwrap();
+        let values = function.params.iter().zip(&args)
+            .map(|(parameter, text)| aury::value_io::parse_cli_value(&m, &parameter.ty, text).unwrap())
+            .collect();
+        let mut interp = Interp::new(&m, 0xC0FFEE);
+        let expected = format!("{}\n", aury::value_io::show_value(&interp.call_fn(entry, values).unwrap()));
+        let ir = aury::lower::lower_program_with_main(&m, entry, &args).unwrap();
+        let ll = std::env::temp_dir().join(format!("aury_native_parity_{}.ll", index));
+        let exe = std::env::temp_dir().join(format!("aury_native_parity_{}.exe", index));
+        std::fs::write(&ll, ir).unwrap();
+        let clang = std::process::Command::new("clang")
+            .args(["-O2", ll.to_str().unwrap(), &runtime, "-o", exe.to_str().unwrap()])
+            .output().unwrap();
+        assert!(clang.status.success(), "clang failed for {}:\n{}", entry, String::from_utf8_lossy(&clang.stderr));
+        let output = std::process::Command::new(&exe).output().unwrap();
+        assert!(output.status.success(), "native {} failed", entry);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{}", entry);
+    }
+}
+
+#[test]
+fn native_vector_bounds_trap_matches_interpreter_error() {
+    let src = std::fs::read_to_string("tests/native_parity.aury").unwrap();
+    let m = module(&src);
+    if std::process::Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
+    let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
+    for (index, args) in [
+        vec![r#"["only"]"#.to_string(), "-1".to_string()],
+        vec![r#"["only"]"#.to_string(), "1".to_string()],
+    ].into_iter().enumerate() {
+        let values = vec![
+            aury::value_io::parse_cli_value(&m, &aury::types::Type::Vec(Box::new(aury::types::Type::Str)), &args[0]).unwrap(),
+            aury::interp::Value::I64(args[1].parse().unwrap()),
+        ];
+        assert!(Interp::new(&m, 0xC0FFEE).call_fn("vec-at", values).is_err());
+        let ir = aury::lower::lower_program_with_main(&m, "vec-at", &args).unwrap();
+        let ll = std::env::temp_dir().join(format!("aury_bounds_{}.ll", index));
+        let exe = std::env::temp_dir().join(format!("aury_bounds_{}.exe", index));
+        std::fs::write(&ll, ir).unwrap();
+        let clang = std::process::Command::new("clang")
+            .args(["-O2", ll.to_str().unwrap(), &runtime, "-o", exe.to_str().unwrap()])
+            .output().unwrap();
+        assert!(clang.status.success(), "{}", String::from_utf8_lossy(&clang.stderr));
+        assert!(!std::process::Command::new(exe).output().unwrap().status.success());
+    }
+}
+
+#[test]
+fn cli_compile_runs_bare_output_name_with_embedded_runtime() {
+    if std::process::Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
+    let directory = std::env::temp_dir().join(format!("aury_cli_bare_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let fixture = std::fs::canonicalize("tests/native_parity.aury").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aury"))
+        .current_dir(&directory)
+        .args([
+            "compile",
+            fixture.to_str().unwrap(),
+            "packet-name",
+            r#"{"name":"bare","values":[1],"nested":[]}"#,
+            "-o",
+            "bare_native",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "\"bare\"\n");
+    assert!(directory.join("bare_native").is_file());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn validator_rejects_duplicate_fields_and_accepts_i64_neq() {
+    let duplicate = module(r#"
+(module m
+  (struct P (x i64))
+  (fn f (params) (ret (struct P))
+    (body (new-struct P (x (lit 1)) (x (lit 2))))))"#);
+    let rejections = match check_module(&duplicate) {
+        ValidationOutcome::Rejected(rejections) => rejections,
+        _ => panic!("duplicate field must be rejected"),
+    };
+    assert!(rejections.iter().any(|rejection| rejection.kind == "DUPLICATE_FIELD"));
+
+    let neq = module(r#"
+(module m
+  (fn f (params (a i64) (b i64)) (ret bool)
+    (body (call i64.neq (ref a) (ref b)))))"#);
+    assert!(check_module(&neq).is_accepted());
+
+    let bad_rng = module(r#"
+(module m
+  (fn f (params) (ret i64) (effects (rng))
+    (body (call rng.next (lit 1)))))"#);
+    assert!(matches!(check_module(&bad_rng), ValidationOutcome::Rejected(_)));
+    assert!(Interp::new(&bad_rng, 0xC0FFEE).call_fn("f", vec![]).is_err());
+}
+
+#[test]
+fn validator_checks_function_and_explicit_return_types() {
+    for src in [
+        r#"(module m (fn f (params) (ret i64) (body (lit true))))"#,
+        r#"(module m (fn f (params) (ret i64) (body (return (lit true)))))"#,
+    ] {
+        let rejected = match check_module(&module(src)) {
+            ValidationOutcome::Rejected(rejections) => rejections,
+            _ => panic!("return mismatch must be rejected"),
+        };
+        assert!(rejected.iter().any(|rejection| rejection.kind == "RETURN_TYPE_MISMATCH"));
+    }
+}
+
+#[test]
+fn nested_let_shadowing_restores_the_previous_binding() {
+    let m = module(r#"
+(module m
+  (fn f (params (x i64)) (ret i64)
+    (body (block
+      (let x bool (lit true) (ref x))
+      (ref x)))))"#);
+    assert!(check_module(&m).is_accepted());
+    assert_eq!(
+        Interp::new(&m, 0).call_fn("f", vec![i64v(17)]).unwrap(),
+        i64v(17)
+    );
+}
+
+#[test]
+fn duplicate_struct_and_function_names_are_rejected() {
+    let duplicate_struct = module(r#"
+(module m
+  (struct Same (first i64))
+  (struct Same (second bool))
+  (fn f (params) (ret i64) (body (lit 0))))"#);
+    let rejected = match check_module(&duplicate_struct) {
+        ValidationOutcome::Rejected(rejections) => rejections,
+        _ => panic!("duplicate struct names must be rejected"),
+    };
+    assert!(rejected.iter().any(|rejection| rejection.kind == "DUPLICATE_STRUCT"));
+
+    let duplicate_function = module(r#"
+(module m
+  (fn same (params) (ret i64) (body (lit 1)))
+  (fn same (params) (ret i64) (body (lit 2))))"#);
+    let rejected = match check_module(&duplicate_function) {
+        ValidationOutcome::Rejected(rejections) => rejections,
+        _ => panic!("duplicate function names must be rejected"),
+    };
+    assert!(rejected
+        .iter()
+        .any(|rejection| rejection.kind == "DUPLICATE_FUNCTION"));
+}
+
+#[test]
+fn native_binary_builtins_propagate_returns_from_operands() {
+    if std::process::Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
+    let m = module(r#"
+(module m
+  (fn arithmetic (params) (ret i64)
+    (body (call i64.add (return (lit 7)) (lit 1))))
+  (fn comparison (params) (ret i64)
+    (body (call i64.eq (lit 1) (return (lit 8)))))
+  (fn boolean (params) (ret bool)
+    (body (call bool.and (return (lit true)) (lit false)))))"#);
+    assert!(check_module(&m).is_accepted());
+    let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
+    for (index, (entry, expected)) in [
+        ("arithmetic", "7\n"),
+        ("comparison", "8\n"),
+        ("boolean", "true\n"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ir = aury::lower::lower_program_with_main(&m, entry, &[]).unwrap();
+        let ll = std::env::temp_dir().join(format!("aury_return_operand_{}.ll", index));
+        let exe = std::env::temp_dir().join(format!("aury_return_operand_{}.exe", index));
+        std::fs::write(&ll, ir).unwrap();
+        let clang = std::process::Command::new("clang")
+            .args(["-O2", ll.to_str().unwrap(), &runtime, "-o", exe.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(clang.status.success(), "{}", String::from_utf8_lossy(&clang.stderr));
+        let output = std::process::Command::new(exe).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    }
+}
+
+#[test]
+fn recursive_native_entry_descriptor_is_a_compile_error() {
+    let m = module(r#"
+(module m
+  (struct Node (next (struct Node)))
+  (fn never (params) (ret (struct Node)) (body (loop unit))))"#);
+    assert!(check_module(&m).is_accepted());
+    let error = aury::lower::lower_program_with_main(&m, "never", &[]).unwrap_err();
+    assert!(error.contains("recursive struct `Node`"), "{}", error);
+}
+
+#[test]
+fn aggregate_value_io_rejects_malformed_values() {
+    use aury::types::Type;
+
+    let m = module(&std::fs::read_to_string("tests/native_parity.aury").unwrap());
+    let nested_bools = Type::Vec(Box::new(Type::Vec(Box::new(Type::Bool))));
+    let packet = Type::Struct("Packet".into());
+    let result = Type::Result(
+        Box::new(Type::Vec(Box::new(Type::I64))),
+        Box::new(packet.clone()),
+    );
+    for (ty, text) in [
+        (Type::Vec(Box::new(Type::I64)), "["),
+        (nested_bools, "[[1]]"),
+        (packet.clone(), r#"{"name":"x","values":[]}"#),
+        (
+            packet.clone(),
+            r#"{"name":"x","values":[],"nested":[],"extra":0}"#,
+        ),
+        (result.clone(), "{}"),
+        (result.clone(), r#"{"ok":[],"err":{"name":"x","values":[],"nested":[]}}"#),
+        (result.clone(), r#"{"ok":[1],"ok":[2]}"#),
+        (packet, r#"{"name":"first","name":"last","values":[],"nested":[]}"#),
+        (result, r#"{"other":0}"#),
+    ] {
+        assert!(
+            aury::value_io::parse_cli_value(&m, &ty, text).is_err(),
+            "{:?} unexpectedly accepted {}",
+            ty,
+            text
+        );
     }
 }

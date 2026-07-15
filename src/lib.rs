@@ -33,5 +33,6 @@ pub mod sexpr;
 pub mod spec;
 pub mod types;
 pub mod validate;
+pub mod value_io;
 
 pub use loop_driver::{repair_loop, LoopResult};
