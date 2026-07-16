@@ -1,0 +1,33 @@
+{
+  "kind": "module",
+  "name": "false_property_demo",
+  "items": [
+    {
+      "kind": "spec",
+      "properties": [
+        {
+          "name": "sum-always-bigger-than-a",
+          "forall": [
+            { "name": "a", "type": "i64" },
+            { "name": "b", "type": "i64" }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.gt",
+            "args": [
+              { "kind": "call", "op": "add", "args": [ { "kind": "ref", "name": "a" }, { "kind": "ref", "name": "b" } ] },
+              { "kind": "ref", "name": "a" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "kind": "fn",
+      "name": "add",
+      "params": [ { "name": "a", "type": "i64" }, { "name": "b", "type": "i64" } ],
+      "ret": "i64",
+      "body": { "kind": "call", "op": "i64.add", "args": [ { "kind": "ref", "name": "a" }, { "kind": "ref", "name": "b" } ] }
+    }
+  ]
+}

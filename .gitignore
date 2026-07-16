@@ -5,12 +5,12 @@
 *.exe
 *.ll
 
-# Local example and program workspaces
-/examples/
+# Repaired programs emitted by the agent harness (dev.sh)
+*.repaired.aury
+
+# Local program workspace (scratch; not part of the tracked corpus)
 /programs/
 
 # Local agent/review artifacts
 /.pi/
 /.pi-subagents/
-/examples/
-/programs/

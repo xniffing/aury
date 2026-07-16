@@ -1,0 +1,14 @@
+; Demo: effects + regions. `roll-even` declares the `rng` effect and uses
+; `rng.next` inside a `region`, looping until it draws an even number.
+; Consulted by the skill to show the effect/region shape; authoring the same
+; program with `rng.next` but no `(effects rng)` yields an effect-leak rejection
+; whose repair adds the effect to the signature.
+(module dice
+  (fn roll-even (params) (ret i64) (effects rng)
+    (body
+      (region r
+        (loop
+          (let n i64 (call rng.next)
+            (if (call i64.eq (call i64.mod (ref n) (lit 2)) (lit 0))
+              (then (return (ref n)))
+              (else (lit 0)))))))))

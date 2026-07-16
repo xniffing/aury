@@ -1,0 +1,251 @@
+# Aury for agents
+
+This is the reference an AI consults **before authoring an Aury program and
+while correcting one**. Aury is co-designed with an LLM repair loop: you author
+in a structured JSON AST, the toolchain returns machine-readable rejections that
+each carry a *ranked, cost-annotated repair menu*, and you apply repairs until
+the program is accepted.
+
+The correction loop you run:
+
+```
+author JSON  →  ingest (--force)  →  loop (auto-repair) + test (counterexamples)
+     ↑                                          │
+     └──────── read rejections / repairs ───────┘   (apply lowest-cost admissible
+                                                      repair, or regenerate)
+```
+
+Run every step with the harness: `./.claude/skills/aury/dev.sh <program.json>`.
+See "The dev.sh contract" at the bottom for its output shape.
+
+---
+
+## 1. Author in JSON (never count parentheses)
+
+Emit a **typed-object JSON AST**. Every node is `{"kind": "...", ...}`. This is
+the authoring surface — `ingest` converts it to the canonical s-expr IR with
+identical Merkle node ids, so JSON is a true front-end for the one canonical
+form, not a second format. Because the JSON is `kind`-tagged, you never miscount
+delimiters — the class of error that structured generation exists to remove.
+
+A whole module:
+
+```json
+{
+  "kind": "module",
+  "name": "gcd",
+  "items": [ <item>, <item>, ... ]
+}
+```
+
+`items` is a list of `fn`, `struct`, `extern`, and `spec` nodes (below).
+
+---
+
+## 2. Types (the `"type"` / `"ret"` string fields)
+
+Types are written as **strings**, using the s-expr type syntax:
+
+| Type | String | Notes |
+|------|--------|-------|
+| 64-bit int | `"i64"` | the numeric core |
+| Boolean | `"bool"` | |
+| String | `"str"` | |
+| Unit | `"unit"` | no value |
+| Vector | `"(vec i64)"` | homogeneous, `(vec T)` |
+| Struct | `"(struct Vec2)"` | must match a declared `struct` |
+| Result | `"(result i64 str)"` | `(result Ok Err)` — from `i64.from_str` etc. |
+| Region handle | `"region"` | rarely written directly |
+| Reference | `"(ref r i64)"` / `"(mut r i64)"` | region-scoped borrow |
+
+---
+
+## 3. Module items
+
+### `fn`
+```json
+{
+  "kind": "fn",
+  "name": "gcd",
+  "params": [ {"name": "a", "type": "i64"}, {"name": "b", "type": "i64"} ],
+  "ret": "i64",
+  "effects": ["rng"],          // optional; omit for a pure function
+  "body": <expr>
+}
+```
+The body is a **single expression** (use `let`, `if`, `block` to sequence).
+
+### `struct`
+```json
+{ "kind": "struct", "name": "Vec2",
+  "fields": [ {"name": "x", "type": "i64"}, {"name": "y", "type": "i64"} ] }
+```
+
+### `extern`
+An externally-provided function signature (no body) that Aury may call:
+```json
+{ "kind": "extern", "name": "host_time",
+  "params": [], "ret": "i64", "effects": ["time"] }
+```
+
+### `spec` — the part an agent checks against
+A spec block carries **contracts** and **properties**. This is where intent is
+verified; `aury test` runs it and hands back shrunk counterexamples.
+
+```json
+{
+  "kind": "spec",
+  "contracts": [
+    { "pre": <bool-expr>, "post": <bool-expr> }   // requires / ensures
+  ],
+  "properties": [
+    {
+      "name": "gcd-commutative",
+      "forall": [ {"name": "a", "type": "i64"}, {"name": "b", "type": "i64"} ],
+      "body": <bool-expr>        // must evaluate to bool for all bindings
+    }
+  ]
+}
+```
+A property `body` must be `bool`. Guard partial properties with `if`:
+`if (precondition) then (real check) else true` — an unguarded property that is
+never meaningfully exercised is flagged as **vacuous**.
+
+---
+
+## 4. Expression nodes (every `kind`)
+
+| kind | shape | meaning |
+|------|-------|---------|
+| `lit` | `{"kind":"lit","value": 0 \| true \| "hi"}` | i64 / bool / str literal |
+| `ref` | `{"kind":"ref","name":"a"}` | read a param / let binding |
+| `let` | `{"kind":"let","name":"h","type":"i64","value":<e>,"body":<e>}` | bind then continue |
+| `call` | `{"kind":"call","op":"i64.add","args":[<e>,...]}` | builtin **or** user fn by name |
+| `if` | `{"kind":"if","cond":<e>,"then":<e>,"else":<e>}` | all three required |
+| `match` | `{"kind":"match","scrutinee":<e>,"arms":[{"pattern":<p>,"body":<e>}]}` | see patterns below |
+| `loop` | `{"kind":"loop","body":<e>}` | repeat until a `return` fires |
+| `return` | `{"kind":"return","value":<e>}` | early return (used inside `loop`) |
+| `block` | `{"kind":"block","items":[<e>,...]}` | sequence; value is the last |
+| `region` | `{"kind":"region","name":"r","body":<e>}` | open an allocation/effect region |
+| `copy` | `{"kind":"copy","value":<e>}` | explicit copy of a value |
+| `vec-new` | `{"kind":"vec-new","type":"(vec i64)","elems":[<e>,...]}` | build a vector |
+| `idx` | `{"kind":"idx","target":<e>,"index":<e>}` | vector element (bounds-checked) |
+| `len` | `{"kind":"len","target":<e>}` | vector length → i64 |
+| `new-struct` | `{"kind":"new-struct","name":"Vec2","fields":[{"name":"x","value":<e>}]}` | construct |
+| `get` | `{"kind":"get","target":<e>,"field":"x"}` | read a struct field |
+| `cast` | `{"kind":"cast","type":"i64","value":<e>}` | e.g. parse str→i64 (traps on bad input) |
+
+### Match patterns (`"pattern"`)
+| kind | shape | matches |
+|------|-------|---------|
+| `wild` | `{"kind":"wild"}` | anything (`_`) |
+| `bind` | `{"kind":"bind","name":"x"}` | anything, binds `x` |
+| `lit` | `{"kind":"lit","value": 0}` | that exact literal |
+
+---
+
+## 5. Builtins (exact signatures)
+
+Call as `{"kind":"call","op":"<name>","args":[...]}`. Arity and types are
+checked; a mismatch comes back as a rejection with a repair.
+
+**Integer** (`i64`):
+| op | signature |
+|----|-----------|
+| `i64.add` `i64.sub` `i64.mul` `i64.div` `i64.mod` | `(i64, i64) -> i64` |
+| `i64.eq` `i64.neq` `i64.lt` `i64.le` `i64.gt` `i64.ge` | `(i64, i64) -> bool` |
+| `i64.neg` `i64.abs` | `(i64) -> i64` |
+| `i64.to_str` | `(i64) -> str` |
+| `i64.from_str` `i64.parse` | `(str) -> (result i64 str)` |
+
+**Boolean** (`bool`):
+| op | signature |
+|----|-----------|
+| `bool.and` `bool.or` | `(bool, bool) -> bool` |
+| `bool.not` | `(bool) -> bool` |
+| `bool.eq` | `(bool, bool) -> bool` |
+
+**String** (`str`):
+| op | signature |
+|----|-----------|
+| `str.concat` | `(str, str) -> str` |
+| `str.eq` `str.neq` | `(str, str) -> bool` |
+| `str.len` | `(str) -> i64` |
+
+A `call` whose `op` is not a builtin is a **call to a user `fn`** of that name;
+the argument types must match the callee's `params`.
+
+---
+
+## 6. Effects and regions
+
+- A function with no `effects` field is **pure** and may only call pure things.
+- Declaring `"effects": ["rng"]` lets the body use `rng.next` (→ `i64`) and call
+  other `rng` functions. Capabilities that parse: `rng`, `io`, `net`, `time`
+  (only `rng` has an interpreter/native builtin in v0).
+- Effectful/allocating work happens inside a `region` node; `rng.next` is used
+  inside one. See `examples/agent/dice.aury` for the canonical shape.
+- The validator **rejects effect leaks**: using `rng.next` in a pure function is
+  a rejection whose repair either adds the effect to the signature or removes the
+  call.
+
+---
+
+## 7. Reading a rejection and correcting it
+
+Every rejected gate — parse, type, effect, region, contract, property — comes
+back as one JSON object:
+
+```json
+{
+  "gate": "type",
+  "kind": "TYPE_MISMATCH",
+  "node": "5af1f8fcee45a7f0",          // Merkle id of the offending node
+  "path": "gcd.body.if.cond",
+  "expected": "bool",
+  "received": "i64",
+  "context": { ... },
+  "repairs": [
+    {
+      "id": "r1",
+      "action": "wrap_call",
+      "with": "(call i64.eq ... (lit 0))",
+      "cost": 2,                        // lower = prefer this one
+      "preserves_effects": true,
+      "preserves_contracts": true,
+      "propagates": [],                 // sibling nodes that also need editing
+      "note": "human-readable explanation of the fix"
+    }
+  ]
+}
+```
+
+**Correction protocol:**
+1. Read `repairs`, which are already sorted by `cost` (lowest first).
+2. Prefer a repair with `preserves_effects` **and** `preserves_contracts` true.
+3. Apply it (edit that node in your JSON), then re-run `dev.sh`.
+4. `aury loop` will auto-apply *admissible* repairs for you; only intervene on
+   what it leaves in `remaining`, or when `recommend_regenerate` is set.
+5. For a `PROPERTY_FALSIFIED` / contract failure, `received` is the **shrunk
+   minimal counterexample** (e.g. `"falsified for: a = 0i64, b = 0i64"`). Decide
+   whether the **implementation** is wrong or the **property/contract** is wrong,
+   fix that one, and re-run. Don't weaken a true property to pass.
+
+---
+
+## The dev.sh contract
+
+`./.claude/skills/aury/dev.sh <program.json|program.aury> [entry-fn arg...]`
+
+It runs: ingest (`--force`, so an invalid program is still written for repair) →
+`aury loop` (auto-repair + property tests) → and, if an entry fn is given and the
+program is accepted, `aury run` (and `aury compile` when `clang` is present, to
+check the native result equals the interpreter). It prints each stage under a
+clear `=== STAGE ===` banner and ends with a single machine-readable line:
+
+```
+AURY_RESULT {"status":"accepted","patches_applied":1,"entry":"gcd","run":"12","native":"12"}
+```
+or, on failure, `status` is `rejected` (see the printed rejection JSON above the
+line) or `error`. Parse that final line; read the rejection JSON above it to pick
+your next repair.
