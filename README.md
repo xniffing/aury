@@ -554,6 +554,8 @@ aury lower <file>                print the structural MLIR sketch
 aury ll <file> [out.ll]          emit validated LLVM IR
 aury compile <file> <fn> [args...] [-o out]
                                  lower, compile with clang, execute, and print
+aury wasm <file> <fn> [args...] [-o out.wasm] [--no-run]
+                                 lower, build a wasm32-wasi module, run it
 aury ingest <file.json> [out]    typed-object/array JSON → canonical Aury
 aury emit-json <file.aury>       canonical Aury → array-form JSON
 ```
@@ -562,6 +564,33 @@ aury emit-json <file.aury>       canonical Aury → array-form JSON
 arguments embedded in the LLVM module, compiles it, and immediately runs it.
 This is suitable for differential testing and small tools; a reusable dynamic
 native library ABI is future work.
+
+### WebAssembly (wasm32-wasi)
+
+`aury wasm` reuses the same LLVM lowering, retargeting clang at `wasm32-wasi`
+and linking the C runtime against wasi-libc. The generated entry is named
+`__main_void` (raw IR bypasses clang's C frontend, so wasi-libc's `_start`
+finds the entry only under its own symbol). If a wasm runtime is on `PATH`
+(`wasmtime` or `wasmer`), the module is executed and its result printed — it
+must match `aury run` and `aury compile`; pass `--no-run` to only build.
+
+It needs a clang with the WebAssembly target plus a wasi-libc sysroot,
+`wasm-ld`, and the wasm32 `compiler-rt` builtins. The self-contained
+[wasi-sdk](https://github.com/WebAssembly/wasi-sdk) provides all of these and is
+auto-detected via `WASI_SDK_PATH` (or `/opt/wasi-sdk`). To assemble the
+toolchain from Homebrew instead:
+
+```bash
+brew install llvm lld wasi-libc wasmtime      # clang+wasm target, wasm-ld, sysroot, runtime
+export AURY_WASM_CLANG="$(brew --prefix llvm)/bin/clang"
+export WASI_SYSROOT="$(brew --prefix wasi-libc)/share/wasi-sysroot"
+export PATH="$(brew --prefix lld)/bin:$PATH"   # so clang finds wasm-ld
+```
+
+Homebrew's `llvm` omits the wasm32 `compiler-rt` builtins; fetch the prebuilt
+`libclang_rt.builtins-wasm32.a` from a wasi-sdk release and place it where clang
+expects it (`$(brew --prefix llvm)/lib/clang/<ver>/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a`),
+or just use wasi-sdk.
 
 ---
 
