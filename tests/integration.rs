@@ -201,7 +201,7 @@ fn i64v(n: i64) -> aury::interp::Value {
 #[test]
 fn json_ingest_produces_valid_canonical_program() {
     // The typed-object JSON form is what a model emits via a tool-call.
-    let json = std::fs::read_to_string("examples/gcd.json").expect("read gcd.json");
+    let json = std::fs::read_to_string("tests/fixtures/gcd.json").expect("read gcd.json");
     let module = aury::json::build_module_from_json(&json).expect("ingest");
     assert!(check_module(&module).is_accepted());
     let mut interp = Interp::new(&module, 0);
@@ -213,7 +213,7 @@ fn json_and_sexpr_paths_produce_identical_ir() {
     // The headline proof: authoring as JSON vs authoring as s-expressions must
     // yield byte-identical IR — the same Merkle node ids — so the JSON path is
     // a true authoring surface for the canonical form, not a parallel format.
-    let json = std::fs::read_to_string("examples/gcd.json").unwrap();
+    let json = std::fs::read_to_string("tests/fixtures/gcd.json").unwrap();
     let json_sexpr = aury::json::parse_json_sexpr(&json).unwrap();
     let json_module = build_module(&json_sexpr).unwrap();
     let aury_src = format!("{:?}", json_sexpr);
@@ -240,7 +240,7 @@ fn json_and_sexpr_paths_produce_identical_ir() {
 fn emit_json_then_ingest_round_trips() {
     // emit-json (.aury -> array-form JSON) then ingest (JSON -> .aury) must
     // produce a program that validates and runs identically to the original.
-    let src = std::fs::read_to_string("examples/calculator.aury").unwrap();
+    let src = std::fs::read_to_string("tests/fixtures/calculator.aury").unwrap();
     let xs = parse(&src).unwrap();
     let json = aury::json::sexpr_to_json(&xs[0]);
     let json_text = serde_json::to_string(&json).unwrap();
@@ -275,7 +275,7 @@ fn native_lowering_matches_interpreter_for_numeric_core() {
     // code via clang must produce the SAME result as the interpreter. This is
     // the strong equivalence check — it catches any lowering bug (SSA, control
     // flow, divergence, builtin mapping) by running both and comparing.
-    let src = std::fs::read_to_string("examples/math.aury").unwrap();
+    let src = std::fs::read_to_string("tests/fixtures/math.aury").unwrap();
     let xs = parse(&src).unwrap();
     let m = build_module(&xs[0]).unwrap();
     // lower the reachable set from gcd (i64/bool core only)

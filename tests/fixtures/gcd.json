@@ -1,0 +1,60 @@
+{
+  "kind": "module",
+  "name": "gcd",
+  "items": [
+    {
+      "kind": "spec",
+      "properties": [
+        {
+          "name": "gcd-commutative",
+          "forall": [
+            { "name": "a", "type": "i64" },
+            { "name": "b", "type": "i64" }
+          ],
+          "body": {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "bool.and",
+              "args": [
+                { "kind": "call", "op": "i64.gt", "args": [{ "kind": "ref", "name": "a" }, { "kind": "lit", "value": 0 }] },
+                { "kind": "call", "op": "i64.gt", "args": [{ "kind": "ref", "name": "b" }, { "kind": "lit", "value": 0 }] }
+              ]
+            },
+            "then": {
+              "kind": "call",
+              "op": "i64.eq",
+              "args": [
+                { "kind": "call", "op": "gcd", "args": [{ "kind": "ref", "name": "a" }, { "kind": "ref", "name": "b" }] },
+                { "kind": "call", "op": "gcd", "args": [{ "kind": "ref", "name": "b" }, { "kind": "ref", "name": "a" }] }
+              ]
+            },
+            "else": { "kind": "lit", "value": true }
+          }
+        }
+      ]
+    },
+    {
+      "kind": "fn",
+      "name": "gcd",
+      "params": [
+        { "name": "a", "type": "i64" },
+        { "name": "b", "type": "i64" }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": { "kind": "call", "op": "i64.eq", "args": [{ "kind": "ref", "name": "b" }, { "kind": "lit", "value": 0 }] },
+        "then": { "kind": "call", "op": "i64.abs", "args": [{ "kind": "ref", "name": "a" }] },
+        "else": {
+          "kind": "call",
+          "op": "gcd",
+          "args": [
+            { "kind": "ref", "name": "b" },
+            { "kind": "call", "op": "i64.mod", "args": [{ "kind": "call", "op": "i64.abs", "args": [{ "kind": "ref", "name": "a" }] }, { "kind": "ref", "name": "b" }] }
+          ]
+        }
+      }
+    }
+  ]
+}
