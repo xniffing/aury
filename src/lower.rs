@@ -377,8 +377,24 @@ fn emit_main_value(module: &Module, value: &Value, ty: &Type, globals: &mut Stri
 }
 
 /// Build a runnable native program: lower the reachable set from `entry_fn`,
-/// add a C `main` that calls it with `args` and prints the result.
+/// add a C-style `main` that calls it with `args` and prints the result.
 pub fn lower_program_with_main(module: &Module, entry_fn: &str, args: &[String]) -> Result<String, String> {
+    lower_program_with_entry(module, entry_fn, args, "main")
+}
+
+/// Like `lower_program_with_main`, but names the generated entry function
+/// `entry_symbol`. The native backend uses `main` (clang/host crt calls it). The
+/// wasm32-wasi backend uses `__main_void`: raw IR bypasses clang's C frontend,
+/// which is what normally renames `main` to the symbol wasi-libc's `_start`
+/// actually calls — so a literal `@main` is left unreferenced and traps. Naming
+/// the entry `__main_void` (the crt's direct, no-args entry) overrides libc's
+/// weak default and is invoked directly.
+pub fn lower_program_with_entry(
+    module: &Module,
+    entry_fn: &str,
+    args: &[String],
+    entry_symbol: &str,
+) -> Result<String, String> {
     let mut ir = lower_set(module, &reachable(module, entry_fn), false)?;
     let function = module.items.iter().find_map(|item| match item {
         ModuleItem::Fn(function) if function.name == entry_fn => Some(function),
@@ -400,7 +416,7 @@ pub fn lower_program_with_main(module: &Module, entry_fn: &str, args: &[String])
     let descriptor = type_descriptor(module, &function.ret)?;
     globals.push_str(&format!("@.return_type = private constant [{} x i8] c\"{}\"\n", descriptor.len() + 1, llvm_c_string(&descriptor)));
     ir.push_str(&globals);
-    ir.push_str("define i32 @main() {\nentry:\n  call void @aury_rng_init(i64 12648430)\n");
+    ir.push_str(&format!("define i32 @{}() {{\nentry:\n  call void @aury_rng_init(i64 12648430)\n", entry_symbol));
     ir.push_str(&body);
     ir.push_str(&format!("  %r = call {} @aury__{}({})\n", llvm_type(&function.ret), entry_fn, arguments.join(", ")));
     if llvm_type(&function.ret) == "ptr" {

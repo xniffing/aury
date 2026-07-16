@@ -24,6 +24,9 @@ COMMANDS:
   ll <file> [out.ll]         Emit validated LLVM IR text.
   compile <file> <fn> [args...] [-o out]
                              Build with clang, run, and print the native result.
+  wasm <file> <fn> [args...] [-o out.wasm] [--no-run]
+                             Build to a wasm32-wasi module with clang; run it with
+                             wasmtime/wasmer if present and print the result.
   json <file>                Like `validate` but print one JSON object per rejection.
   ingest <file.json> [out]   Convert a JSON AST (the AI authoring surface) to the
                             canonical s-expr form, validate it, and write <out>.aury.
@@ -86,6 +89,7 @@ fn main() -> ExitCode {
         "lower" => cmd_lower(&args[2..]),
         "ll" => cmd_ll(&args[2..]),
         "compile" => cmd_compile(&args[2..]),
+        "wasm" => cmd_wasm(&args[2..]),
         "json" => cmd_json(&args[2..]),
         "ingest" => cmd_ingest(&args[2..]),
         "emit-json" => cmd_emit_json(&args[2..]),
@@ -350,6 +354,168 @@ fn cmd_compile(args: &[String]) -> Result<ExitCode, String> {
     print!("{}", String::from_utf8_lossy(&status.stdout));
     if !status.status.success() {
         eprintln!("native exit code: {:?}", status.status.code());
+    }
+    Ok(if status.status.success() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+/// Resolve the clang used for wasm builds. Apple's system clang usually ships
+/// without the WebAssembly backend, and wasi-sdk's clang bundles the sysroot and
+/// `wasm-ld`, so prefer an explicit override. Honour `AURY_WASM_CLANG`, then a
+/// wasi-sdk layout (`$WASI_SDK_PATH/bin/clang`, `/opt/wasi-sdk/bin/clang`), then
+/// fall back to a bare `clang` on PATH.
+fn resolve_wasm_clang() -> String {
+    if let Ok(explicit) = std::env::var("AURY_WASM_CLANG") {
+        if !explicit.is_empty() {
+            return explicit;
+        }
+    }
+    let sdk_candidates = std::env::var("WASI_SDK_PATH")
+        .ok()
+        .into_iter()
+        .map(|p| format!("{}/bin/clang", p.trim_end_matches('/')))
+        .chain(std::iter::once("/opt/wasi-sdk/bin/clang".to_string()));
+    for candidate in sdk_candidates {
+        if std::path::Path::new(&candidate).exists() {
+            return candidate;
+        }
+    }
+    "clang".to_string()
+}
+
+/// Resolve the wasi-libc sysroot for a generic (non-wasi-sdk) clang. wasi-sdk's
+/// own clang defaults its sysroot, so returning `None` is fine there. Honour
+/// `WASI_SYSROOT`, then a wasi-sdk share layout.
+fn resolve_wasi_sysroot() -> Option<String> {
+    if let Ok(explicit) = std::env::var("WASI_SYSROOT") {
+        if !explicit.is_empty() {
+            return Some(explicit);
+        }
+    }
+    let candidates = std::env::var("WASI_SDK_PATH")
+        .ok()
+        .into_iter()
+        .map(|p| format!("{}/share/wasi-sysroot", p.trim_end_matches('/')))
+        .chain(std::iter::once("/opt/wasi-sdk/share/wasi-sysroot".to_string()));
+    candidates.into_iter().find(|c| std::path::Path::new(c).exists())
+}
+
+/// Find an installed wasm runtime (wasmtime, then wasmer) on PATH so a built
+/// module can be executed for the same result the interpreter and native backend
+/// produce. Returns the program name; both accept `<runtime> <module.wasm>`.
+fn resolve_wasm_runtime() -> Option<&'static str> {
+    for runtime in ["wasmtime", "wasmer"] {
+        let found = std::process::Command::new(runtime)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if found {
+            return Some(runtime);
+        }
+    }
+    None
+}
+
+/// wasm: like `compile`, but assemble the validated LLVM IR plus the C runtime
+/// into a `wasm32-wasi` module. The generated `main` is target-neutral, so WASI's
+/// `_start` invokes it and the libc-only runtime (`aury_rt.c`) links against
+/// wasi-libc unchanged. When a wasm runtime is present the module is executed so
+/// its output can be checked against `aury run` / `aury compile`.
+fn cmd_wasm(args: &[String]) -> Result<ExitCode, String> {
+    // aury wasm <file> <fn> [args...] [-o out.wasm] [--no-run]
+    let no_run = args.iter().any(|arg| arg == "--no-run");
+    let option_end = args.iter().position(|arg| arg == "--").unwrap_or(args.len());
+    let o_idx = args[..option_end].iter().position(|arg| arg == "-o");
+    let excluded: std::collections::HashSet<usize> = o_idx
+        .map(|i| [i, i + 1].into_iter().collect())
+        .unwrap_or_default();
+    let positional: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, arg)| {
+            *i != option_end && !excluded.contains(i) && arg.as_str() != "--no-run"
+        })
+        .map(|(_, a)| a)
+        .collect();
+    let out = match o_idx {
+        Some(i) => Some(
+            args.get(i + 1)
+                .cloned()
+                .ok_or("wasm: -o requires an output path")?,
+        ),
+        None => None,
+    };
+    let path = positional.first().ok_or("wasm <file> <fn> [args...] [-o out.wasm] [--no-run]")?;
+    let entry = positional.get(1).ok_or("wasm <file> <fn> [args...]")?;
+    let arg_strs = if positional.len() >= 3 {
+        &positional[2..]
+    } else {
+        &[]
+    };
+    let m = build(path)?;
+    if let ValidationOutcome::Rejected(rejs) = check_module(&m) {
+        eprintln!("rejected before wasm build: {} rejection(s)", rejs.len());
+        for r in &rejs {
+            eprintln!("{}", r.to_json());
+        }
+        return Ok(ExitCode::from(1));
+    }
+    let raw_args: Vec<String> = arg_strs.iter().map(|arg| (*arg).clone()).collect();
+    // Name the entry `__main_void` (not `main`): raw IR skips clang's C frontend,
+    // so wasi-libc's `_start` finds the entry only under its own entry symbol.
+    let ir = aury::lower::lower_program_with_entry(&m, entry, &raw_args, "__main_void")?;
+    let ll = write_unique_temp_file(entry, "ll", &ir)?;
+    let module_path = out.unwrap_or_else(|| {
+        let p = path.trim_end_matches(".aury");
+        format!("{}.{}.wasm", p, entry)
+    });
+    let runtime_c = write_unique_temp_file(&format!("rt_{}", entry), "c", NATIVE_RUNTIME_SOURCE)?;
+    let clang = resolve_wasm_clang();
+    let mut command = std::process::Command::new(&clang);
+    command
+        .arg("--target=wasm32-wasip1")
+        .arg("-O2")
+        .arg(&ll)
+        .arg(&runtime_c)
+        .arg("-o")
+        .arg(&module_path);
+    if let Some(sysroot) = resolve_wasi_sysroot() {
+        command.arg(format!("--sysroot={}", sysroot));
+    }
+    let status = command.output().map_err(|e| {
+        format!(
+            "{}: {} (need a clang with the WebAssembly target; install wasi-sdk \
+             and set WASI_SDK_PATH, or set AURY_WASM_CLANG)",
+            clang, e
+        )
+    })?;
+    let _ = std::fs::remove_file(&runtime_c);
+    if !status.status.success() {
+        eprintln!("wasm build failed:\n{}", String::from_utf8_lossy(&status.stderr));
+        eprintln!("IR written to {:?}", ll);
+        return Ok(ExitCode::from(1));
+    }
+    let _ = std::fs::remove_file(&ll);
+    println!("built {} → {} (wasm32-wasi)", path, module_path);
+    if no_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let Some(runtime) = resolve_wasm_runtime() else {
+        println!("(no wasm runtime found; run with `wasmtime {}` or `wasmer {}`)", module_path, module_path);
+        return Ok(ExitCode::SUCCESS);
+    };
+    let status = std::process::Command::new(runtime)
+        .arg(&module_path)
+        .output()
+        .map_err(|e| format!("run {} {}: {}", runtime, module_path, e))?;
+    print!("{}", String::from_utf8_lossy(&status.stdout));
+    if !status.status.success() {
+        eprintln!("{} stderr:\n{}", runtime, String::from_utf8_lossy(&status.stderr));
+        eprintln!("wasm exit code: {:?}", status.status.code());
     }
     Ok(if status.status.success() {
         ExitCode::SUCCESS
