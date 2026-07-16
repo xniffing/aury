@@ -556,6 +556,9 @@ aury compile <file> <fn> [args...] [-o out]
                                  lower, compile with clang, execute, and print
 aury wasm <file> <fn> [args...] [-o out.wasm] [--no-run]
                                  lower, build a wasm32-wasi module, run it
+aury wasm-lib <file> --export <fn>[,<fn>...] [-o out.wasm]
+                                 build a reusable wasm32-wasi reactor module
+                                 exporting the named functions (for a browser)
 aury ingest <file.json> [out]    typed-object/array JSON → canonical Aury
 aury emit-json <file.aury>       canonical Aury → array-form JSON
 ```
@@ -573,6 +576,15 @@ and linking the C runtime against wasi-libc. The generated entry is named
 finds the entry only under its own symbol). If a wasm runtime is on `PATH`
 (`wasmtime` or `wasmer`), the module is executed and its result printed — it
 must match `aury run` and `aury compile`; pass `--no-run` to only build.
+
+`aury wasm-lib` instead builds a **reactor** module (`-mexec-model=reactor`, no
+`main`) that exports the named functions under the symbol `aury__<name>`, plus
+`_initialize`. A host — a browser via `WebAssembly.instantiate`, or wasmtime —
+calls them directly. Functions whose parameters and result are scalars (`i64`,
+`bool`) cross the boundary as wasm `i64` with no marshaling; aggregate types are
+linear-memory pointers and are flagged. The
+[moon-distance example](moon-distance/README.md) compiles its lunar model this
+way and runs it in the browser. Both wasm commands share the same toolchain:
 
 It needs a clang with the WebAssembly target plus a wasi-libc sysroot,
 `wasm-ld`, and the wasm32 `compiler-rt` builtins. The self-contained

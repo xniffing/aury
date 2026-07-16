@@ -19,34 +19,71 @@ Run through the native LLVM backend:
 ./moon-distance/run-now.sh --native
 ```
 
+Run through the **WebAssembly (wasm32-wasi)** backend — builds a module and
+executes it with `wasmtime`/`wasmer`:
+
+```bash
+./moon-distance/run-now.sh --wasm
+```
+
 Or call the entry directly:
 
 ```bash
 target/release/aury run moon-distance/moon-distance.aury moon-report "$(date -u +%s)"
 ```
 
-## Live D3 dashboard
+## wasm toolchain
 
-The dashboard is vanilla HTML/CSS/JavaScript with a vendored D3 v7 build. A
-small dependency-free Node server refreshes once per minute by compiling the
-current timestamp through Aury's native LLVM backend and exposing the native
-result as JSON.
+The `--wasm` mode and the dashboard need a `wasm32-wasi` toolchain (clang with
+the WebAssembly target, a wasi-libc sysroot, `wasm-ld`) plus a wasm runtime.
+[`wasm-toolchain.sh`](wasm-toolchain.sh) auto-detects and exports the right
+environment: a self-contained [wasi-sdk](https://github.com/WebAssembly/wasi-sdk)
+install (`WASI_SDK_PATH` or `/opt/wasi-sdk`), or a Homebrew assembly:
+
+```bash
+brew install llvm lld wasi-libc wasmtime
+```
+
+Homebrew's `llvm` omits the wasm32 `compiler-rt` builtins; see the root
+[README](../README.md#webassembly-wasm32-wasi) for the one-time step that adds
+them. Anything you export yourself (`AURY_WASM_CLANG`, `WASI_SYSROOT`) is
+respected.
+
+## Live D3 dashboard — the Aury model runs in the browser
+
+The dashboard is vanilla HTML/CSS/JavaScript with a vendored D3 v7 build. The
+Aury computation runs **client-side in WebAssembly**, not on the server:
+
+1. At startup the Node server compiles `moon-distance.aury` **once** into a
+   `wasm32-wasi` reactor module (`aury wasm-lib … --export moon-distance-km`)
+   and serves it as a static `/moon-distance.wasm`.
+2. The server exposes `/api/timestamp` — the only parameter it supplies.
+3. The browser instantiates the module once, then each minute fetches the
+   timestamp and calls the exported `aury__moon-distance-km(unix_seconds)`. The
+   heavy fixed-point work (46-term series + Q6 cosine) happens in the page; the
+   derived fields below are computed in JS from the returned km, mirroring the
+   Aury `moon-report` / `classify-distance` functions.
+
+No clang runs per request, and the module has **zero imports**, so the browser
+loads it with an empty import object — no WASI shim.
 
 ```bash
 ./moon-distance/start-dashboard.sh
 # open http://127.0.0.1:4173
 ```
 
-Set `PORT` or `AURY_BIN` to override the defaults:
+`start-dashboard.sh` sources `wasm-toolchain.sh` before launching the server, so
+the one-time `aury wasm-lib` build finds its toolchain. Set `PORT` or `AURY_BIN`
+to override the defaults:
 
 ```bash
 PORT=8080 AURY_BIN=/path/to/aury ./moon-distance/start-dashboard.sh
 ```
 
-The returned `MoonDistance` record contains:
+The displayed record contains:
 
-- `unix_seconds`: input UTC Unix timestamp
-- `center_distance_km`: conventional geocentric Earth–Moon distance
+- `unix_seconds`: input UTC Unix timestamp (from the server)
+- `center_distance_km`: conventional geocentric Earth–Moon distance (from wasm)
 - `surface_distance_km`: approximate surface-to-surface distance, subtracting
   mean Earth and Moon radii
 - `one_way_light_time_ms`: approximate one-way radio/light travel time

@@ -5,14 +5,20 @@
 #
 # Runs the closed loop an AI uses to author and correct a program:
 #   ingest (--force)  ->  aury loop (auto-repair + property tests)
-#   -> aury run / aury compile (if an entry fn is given and the program is accepted)
+#   -> aury run  (interpreter)
+#   -> aury compile  (native, when clang is present)
+#   -> aury wasm     (wasm32-wasi, when a wasm runtime is present)
+#   for a given entry fn, all asserted to agree.
 #
 # Each stage prints under a `=== STAGE ===` banner. The last line is a single
 # machine-readable status the agent parses:
 #
-#   AURY_RESULT {"status":"accepted","patches_applied":N,"entry":"fn","run":"..","native":".."}
+#   AURY_RESULT {"status":"accepted","patches_applied":N,"entry":"fn","run":"..",
+#                "native":"..","native_matches":true,"wasm":"..","wasm_matches":true}
 #   AURY_RESULT {"status":"rejected", ...}   # see the rejection JSON printed above
 #   AURY_RESULT {"status":"error","message":".."}
+#
+# native/wasm fields appear only when their backend toolchain is available.
 #
 # See AURY-FOR-AGENTS.md (same directory) for the language + rejection/repair schema.
 
@@ -103,6 +109,30 @@ if [ -n "$ENTRY" ]; then
       RUN_JSON="${RUN_JSON},\"native_matches\":false"
     else
       RUN_JSON="${RUN_JSON},\"native_matches\":true"
+    fi
+  fi
+
+  # Optional wasm32-wasi parity: build+run the same entry through `aury wasm`
+  # and assert it equals the interpreter. Gated on a wasm runtime being present;
+  # if the wasm toolchain is incomplete the build fails and the stage is skipped
+  # (never fatal) — set WASI_SDK_PATH or AURY_WASM_CLANG/WASI_SYSROOT + wasm-ld.
+  if command -v wasmtime >/dev/null 2>&1 || command -v wasmer >/dev/null 2>&1; then
+    banner "WASM (wasm32-wasi; must equal the interpreter result)"
+    WASM_MODULE="$(mktemp -u).wasm"
+    WASM_OUT="$("$AURY" wasm "$WORK" "$ENTRY" ${ARGS[@]+"${ARGS[@]}"} -o "$WASM_MODULE" 2>/dev/null)"
+    WASM_CODE=$?
+    rm -f "$WASM_MODULE"
+    if [ $WASM_CODE -eq 0 ] && [ -n "$WASM_OUT" ]; then
+      printf '%s\n' "$WASM_OUT"
+      WASM_LAST="$(printf '%s' "$WASM_OUT" | tail -1)"
+      RUN_JSON="${RUN_JSON},\"wasm\":\"$(jstr "$WASM_LAST")\""
+      if [ "$WASM_LAST" != "$RUN_OUT" ]; then
+        RUN_JSON="${RUN_JSON},\"wasm_matches\":false"
+      else
+        RUN_JSON="${RUN_JSON},\"wasm_matches\":true"
+      fi
+    else
+      echo "skipped: wasm32-wasi toolchain unavailable"
     fi
   fi
 fi

@@ -79,3 +79,24 @@ Try: `./.claude/skills/aury/dev.sh examples/agent/gcd.json gcd 48 36`
 (properties + shrinking + vacuity) · `aury loop <f> [seed]` (closed repair) ·
 `aury ingest <f.json> [out] [--force]` · `aury run|compile <f> <fn> [args]` ·
 `aury ll <f> [out.ll]` (LLVM IR). Prefer `dev.sh` — it chains the loop for you.
+
+## WebAssembly targets (same LLVM lowering)
+
+Once a program is accepted it can also be built for `wasm32-wasi`:
+
+- `aury wasm <f> <fn> [args...] [-o out.wasm] [--no-run]` — build an executable
+  module with the args embedded and run it via `wasmtime`/`wasmer` (if present).
+  stdout is the program result, identical to `aury run`/`aury compile`; the
+  build banner goes to stderr. `--no-run` only builds.
+- `aury wasm-lib <f> --export <fn>[,<fn>...] [-o out.wasm]` — build a **reactor**
+  module that exports the named functions (as `aury__<name>`, plus
+  `_initialize`) for a host to call — e.g. a browser via
+  `WebAssembly.instantiate`. Scalar (`i64`/`bool`) params and results cross the
+  boundary as wasm `i64` (JS `BigInt`) with no marshaling; aggregate types are
+  linear-memory pointers and are flagged. Reachable-from-`i64`-only programs
+  link with **zero imports**, so the host needs no WASI shim.
+
+Both need a `wasm32-wasi` toolchain (clang with the WebAssembly target, a
+wasi-libc sysroot, `wasm-ld`) resolved via `WASI_SDK_PATH` / `AURY_WASM_CLANG` /
+`WASI_SYSROOT`. See `moon-distance/` for a program compiled with `wasm-lib` and
+run in the browser. Authoring/repair never require these — they are backends.

@@ -30,6 +30,44 @@ const elements = {
   error: document.querySelector("#error-toast"),
 };
 
+// moon-distance.aury, compiled to a wasm32-wasi reactor and served by the host.
+// The heavy fixed-point work (46-term lunar series + Q6 cosine) runs here in the
+// browser; the server only hands us a timestamp. Exported as `(i64) -> i64`, so
+// it crosses the JS boundary as a BigInt with no linear-memory marshaling.
+let moonDistanceKm = null;
+
+async function loadMoonModule() {
+  const response = await fetch("/moon-distance.wasm", { cache: "no-store" });
+  if (!response.ok) throw new Error(`wasm module HTTP ${response.status}`);
+  const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {});
+  instance.exports._initialize?.();
+  moonDistanceKm = instance.exports["aury__moon-distance-km"];
+  if (typeof moonDistanceKm !== "function") {
+    throw new Error("wasm module is missing export aury__moon-distance-km");
+  }
+}
+
+// Derive the display record from the km the wasm returns. These derivations
+// mirror the Aury `moon-report` and `classify-distance` functions; keeping them
+// here lets the module export a single scalar entry point.
+function reportFromTimestamp(unixSeconds) {
+  const km = Number(moonDistanceKm(BigInt(unixSeconds)));
+  let range = "mid-range";
+  if (km < 370_000) range = "near perigee";
+  else if (km > 400_000) range = "near apogee";
+  return {
+    unix_seconds: unixSeconds,
+    utc: new Date(unixSeconds * 1000).toISOString(),
+    center_distance_km: km,
+    surface_distance_km: km - 8_108,
+    one_way_light_time_ms: Math.trunc((km * 1_000) / 299_792),
+    range,
+    source: "Aury wasm32-wasi (in-browser)",
+    model: "46-term fixed-point lunar distance series",
+    refreshed_every_seconds: 60,
+  };
+}
+
 function loadHistory() {
   try {
     const values = JSON.parse(localStorage.getItem("aury-moon-history") || "[]");
@@ -201,7 +239,7 @@ function applyData(data) {
   elements.band.textContent = data.range;
   elements.range.textContent = data.range.toUpperCase();
   elements.updated.textContent = time.format(new Date(data.unix_seconds * 1000));
-  elements.status.textContent = "Native Aury telemetry online";
+  elements.status.textContent = "Aury wasm telemetry online";
   elements.statusDot.classList.remove("error");
   elements.error.hidden = true;
   updateSpace(data);
@@ -211,13 +249,13 @@ function applyData(data) {
 async function refresh() {
   clearTimeout(state.refreshTimer);
   try {
-    elements.status.textContent = "Compiling native Aury minute sample…";
-    const response = await fetch("/api/moon-distance", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
-    applyData(data);
+    elements.status.textContent = "Fetching timestamp · computing in wasm…";
+    const response = await fetch("/api/timestamp", { cache: "no-store" });
+    const params = await response.json();
+    if (!response.ok) throw new Error(params.detail || params.error || `HTTP ${response.status}`);
+    applyData(reportFromTimestamp(params.unix_seconds));
   } catch (error) {
-    elements.status.textContent = "Native Aury telemetry unavailable";
+    elements.status.textContent = "Aury wasm telemetry unavailable";
     elements.statusDot.classList.add("error");
     elements.error.textContent = error instanceof Error ? error.message : String(error);
     elements.error.hidden = false;
@@ -230,7 +268,15 @@ async function refresh() {
 setInterval(() => {
   const remaining = Math.max(0, Math.ceil((60_000 - (Date.now() % 60_000)) / 1000));
   elements.countdown.textContent = String(remaining);
-  elements.next.textContent = `Next native sample in ${remaining}s`;
+  elements.next.textContent = `Next wasm sample in ${remaining}s`;
 }, 250);
 
-refresh();
+elements.status.textContent = "Loading Aury wasm module…";
+loadMoonModule()
+  .then(refresh)
+  .catch((error) => {
+    elements.status.textContent = "Aury wasm module failed to load";
+    elements.statusDot.classList.add("error");
+    elements.error.textContent = error instanceof Error ? error.message : String(error);
+    elements.error.hidden = false;
+  });
