@@ -119,10 +119,10 @@ never meaningfully exercised is flagged as **vacuous**.
 |------|-------|---------|
 | `lit` | `{"kind":"lit","value": 0 \| true \| "hi"}` | i64 / bool / str literal |
 | `ref` | `{"kind":"ref","name":"a"}` | read a param / let binding |
-| `let` | `{"kind":"let","name":"h","type":"i64","value":<e>,"body":<e>}` | bind then continue |
+| `let` | `{"kind":"let","name":"h","type":"i64","init":<e>,"body":<e>}` | bind then continue |
 | `call` | `{"kind":"call","op":"i64.add","args":[<e>,...]}` | builtin **or** user fn by name |
 | `if` | `{"kind":"if","cond":<e>,"then":<e>,"else":<e>}` | all three required |
-| `match` | `{"kind":"match","scrutinee":<e>,"arms":[{"pattern":<p>,"body":<e>}]}` | see patterns below |
+| `match` | `{"kind":"match","scrut":<e>,"arms":[{"pattern":<p>,"body":<e>}]}` | see patterns below |
 | `loop` | `{"kind":"loop","body":<e>}` | repeat until a `return` fires |
 | `return` | `{"kind":"return","value":<e>}` | early return (used inside `loop`) |
 | `block` | `{"kind":"block","items":[<e>,...]}` | sequence; value is the last |
@@ -172,8 +172,29 @@ checked; a mismatch comes back as a rejection with a repair.
 | `str.eq` `str.neq` | `(str, str) -> bool` |
 | `str.len` | `(str) -> i64` |
 
+**Result** (`(result i64 str)`):
+| op | signature |
+|----|-----------|
+| `result.is_ok` | `((result i64 str)) -> bool` |
+
 A `call` whose `op` is not a builtin is a **call to a user `fn`** of that name;
 the argument types must match the callee's `params`.
+
+### Working with `result` (important: it is testable-only in v0)
+
+`i64.from_str` / `i64.parse` produce `(result i64 str)`. There is **no `unwrap`
+builtin and no `Ok`/`Err` match pattern** (patterns are only `wild`/`bind`/`lit`,
+which compare i64/bool/str/unit). So you cannot pattern-match a `result` apart.
+The idiom is: test it with `result.is_ok`, and extract the payload separately by
+casting the original string — `cast i64 <str>` (traps on genuinely bad input):
+
+```
+(let r (result i64 str) (call i64.from_str (ref s))
+  (if (call result.is_ok (ref r))
+    (then (cast i64 (ref s)))     ; ok: parse succeeded, cast the same str
+    (else (ref fallback))))       ; err: use a fallback
+```
+See `examples/agent/parse-classify.json` for the full pattern with properties.
 
 ---
 

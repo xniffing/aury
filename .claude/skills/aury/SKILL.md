@@ -69,6 +69,7 @@ AURY_RESULT {"status":"accepted","patches_applied":1,"entry":"gcd","run":"12","n
 | `dice.aury` | Effects + regions: `(effects rng)` with `rng.next` inside a `region` |
 | `unterminated.aury` | Parse-gate repair: missing parens auto-closed in 1 patch |
 | `false-property.json` | A false property → `PROPERTY_FALSIFIED` with a shrunk counterexample and `recommend_regenerate` |
+| `parse-classify.json` | `result` (`i64.from_str` + `result.is_ok`) and `match` (lit + bind patterns); 5 properties |
 
 Try: `./.claude/skills/aury/dev.sh examples/agent/gcd.json gcd 48 36`
 

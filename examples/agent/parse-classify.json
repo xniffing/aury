@@ -1,0 +1,108 @@
+{
+  "kind": "module",
+  "name": "parse_classify",
+  "items": [
+    {
+      "kind": "fn",
+      "name": "parse-or",
+      "params": [
+        { "name": "s", "type": "str" },
+        { "name": "fallback", "type": "i64" }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "let",
+        "name": "r",
+        "type": "(result i64 str)",
+        "init": { "kind": "call", "op": "i64.from_str", "args": [ { "kind": "ref", "name": "s" } ] },
+        "body": {
+          "kind": "if",
+          "cond": { "kind": "call", "op": "result.is_ok", "args": [ { "kind": "ref", "name": "r" } ] },
+          "then": { "kind": "cast", "type": "i64", "value": { "kind": "ref", "name": "s" } },
+          "else": { "kind": "ref", "name": "fallback" }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "classify",
+      "params": [ { "name": "n", "type": "i64" } ],
+      "ret": "str",
+      "body": {
+        "kind": "match",
+        "scrut": { "kind": "ref", "name": "n" },
+        "arms": [
+          { "pattern": { "kind": "lit", "value": 0 }, "body": { "kind": "lit", "value": "zero" } },
+          {
+            "pattern": { "kind": "bind", "name": "x" },
+            "body": {
+              "kind": "if",
+              "cond": { "kind": "call", "op": "i64.gt", "args": [ { "kind": "ref", "name": "x" }, { "kind": "lit", "value": 0 } ] },
+              "then": { "kind": "lit", "value": "pos" },
+              "else": { "kind": "lit", "value": "neg" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "kind": "spec",
+      "properties": [
+        {
+          "name": "parse-roundtrip",
+          "forall": [ { "name": "n", "type": "i64" } ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              { "kind": "call", "op": "parse-or", "args": [ { "kind": "call", "op": "i64.to_str", "args": [ { "kind": "ref", "name": "n" } ] }, { "kind": "lit", "value": 0 } ] },
+              { "kind": "ref", "name": "n" }
+            ]
+          }
+        },
+        {
+          "name": "bad-input-uses-fallback",
+          "forall": [ { "name": "f", "type": "i64" } ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              { "kind": "call", "op": "parse-or", "args": [ { "kind": "lit", "value": "not-a-number" }, { "kind": "ref", "name": "f" } ] },
+              { "kind": "ref", "name": "f" }
+            ]
+          }
+        },
+        {
+          "name": "classify-zero",
+          "forall": [ { "name": "n", "type": "i64" } ],
+          "body": {
+            "kind": "if",
+            "cond": { "kind": "call", "op": "i64.eq", "args": [ { "kind": "ref", "name": "n" }, { "kind": "lit", "value": 0 } ] },
+            "then": { "kind": "call", "op": "str.eq", "args": [ { "kind": "call", "op": "classify", "args": [ { "kind": "ref", "name": "n" } ] }, { "kind": "lit", "value": "zero" } ] },
+            "else": { "kind": "lit", "value": true }
+          }
+        },
+        {
+          "name": "classify-positive",
+          "forall": [ { "name": "n", "type": "i64" } ],
+          "body": {
+            "kind": "if",
+            "cond": { "kind": "call", "op": "i64.gt", "args": [ { "kind": "ref", "name": "n" }, { "kind": "lit", "value": 0 } ] },
+            "then": { "kind": "call", "op": "str.eq", "args": [ { "kind": "call", "op": "classify", "args": [ { "kind": "ref", "name": "n" } ] }, { "kind": "lit", "value": "pos" } ] },
+            "else": { "kind": "lit", "value": true }
+          }
+        },
+        {
+          "name": "classify-negative",
+          "forall": [ { "name": "n", "type": "i64" } ],
+          "body": {
+            "kind": "if",
+            "cond": { "kind": "call", "op": "i64.lt", "args": [ { "kind": "ref", "name": "n" }, { "kind": "lit", "value": 0 } ] },
+            "then": { "kind": "call", "op": "str.eq", "args": [ { "kind": "call", "op": "classify", "args": [ { "kind": "ref", "name": "n" } ] }, { "kind": "lit", "value": "neg" } ] },
+            "else": { "kind": "lit", "value": true }
+          }
+        }
+      ]
+    }
+  ]
+}
