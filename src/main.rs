@@ -27,6 +27,11 @@ COMMANDS:
   wasm <file> <fn> [args...] [-o out.wasm] [--no-run]
                              Build to a wasm32-wasi module with clang; run it with
                              wasmtime/wasmer if present and print the result.
+  wasm-lib <file> --export <fn>[,<fn>...] [-o out.wasm]
+                             Build a reusable wasm32-wasi reactor module that
+                             exports the named functions (callable from a host
+                             such as a browser). Scalar (i64/bool) signatures
+                             cross the boundary directly.
   json <file>                Like `validate` but print one JSON object per rejection.
   ingest <file.json> [out]   Convert a JSON AST (the AI authoring surface) to the
                             canonical s-expr form, validate it, and write <out>.aury.
@@ -90,6 +95,7 @@ fn main() -> ExitCode {
         "ll" => cmd_ll(&args[2..]),
         "compile" => cmd_compile(&args[2..]),
         "wasm" => cmd_wasm(&args[2..]),
+        "wasm-lib" => cmd_wasm_lib(&args[2..]),
         "json" => cmd_json(&args[2..]),
         "ingest" => cmd_ingest(&args[2..]),
         "emit-json" => cmd_emit_json(&args[2..]),
@@ -500,12 +506,14 @@ fn cmd_wasm(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::from(1));
     }
     let _ = std::fs::remove_file(&ll);
-    println!("built {} → {} (wasm32-wasi)", path, module_path);
+    // Status goes to stderr so stdout carries only the program's output, exactly
+    // like `compile` — callers can parse the result without stripping a banner.
+    eprintln!("built {} → {} (wasm32-wasi)", path, module_path);
     if no_run {
         return Ok(ExitCode::SUCCESS);
     }
     let Some(runtime) = resolve_wasm_runtime() else {
-        println!("(no wasm runtime found; run with `wasmtime {}` or `wasmer {}`)", module_path, module_path);
+        eprintln!("(no wasm runtime found; run with `wasmtime {}` or `wasmer {}`)", module_path, module_path);
         return Ok(ExitCode::SUCCESS);
     };
     let status = std::process::Command::new(runtime)
@@ -522,6 +530,117 @@ fn cmd_wasm(args: &[String]) -> Result<ExitCode, String> {
     } else {
         ExitCode::from(1)
     })
+}
+
+/// wasm-lib: build a reusable wasm32-wasi *reactor* module (no `main`) that
+/// exports the named Aury functions for a host to call — e.g. a browser calling
+/// the module with `WebAssembly.instantiate`. Reactor modules export
+/// `_initialize` (call once before use) plus each requested function under the
+/// symbol `aury__<name>`. Scalar Aury types (`i64`, `bool`) map to wasm `i64`
+/// and cross the JS boundary as `BigInt` directly; aggregate returns (`str`,
+/// `vec`, `struct`, `result`) are pointers into the module's linear memory and
+/// need host-side marshaling, so they are reported rather than silently exported.
+fn cmd_wasm_lib(args: &[String]) -> Result<ExitCode, String> {
+    // aury wasm-lib <file> --export <fn>[,<fn>...] [-o out.wasm]
+    let export_idx = args.iter().position(|arg| arg == "--export");
+    let export_list = match export_idx {
+        Some(i) => args.get(i + 1).ok_or("wasm-lib: --export requires a comma-separated function list")?,
+        None => return Err("wasm-lib <file> --export <fn>[,<fn>...] [-o out.wasm]".into()),
+    };
+    let exports: Vec<String> = export_list
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if exports.is_empty() {
+        return Err("wasm-lib: --export list is empty".into());
+    }
+    let o_idx = args.iter().position(|arg| arg == "-o");
+    let excluded: std::collections::HashSet<usize> = o_idx
+        .map(|i| [i, i + 1].into_iter().collect())
+        .unwrap_or_default();
+    let export_excluded: std::collections::HashSet<usize> =
+        export_idx.map(|i| [i, i + 1].into_iter().collect()).unwrap_or_default();
+    let positional: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !excluded.contains(i) && !export_excluded.contains(i))
+        .map(|(_, a)| a)
+        .collect();
+    let out = match o_idx {
+        Some(i) => Some(args.get(i + 1).cloned().ok_or("wasm-lib: -o requires an output path")?),
+        None => None,
+    };
+    let path = positional.first().ok_or("wasm-lib <file> --export <fn>[,<fn>...] [-o out.wasm]")?;
+    let m = build(path)?;
+    if let ValidationOutcome::Rejected(rejs) = check_module(&m) {
+        eprintln!("rejected before wasm-lib build: {} rejection(s)", rejs.len());
+        for r in &rejs {
+            eprintln!("{}", r.to_json());
+        }
+        return Ok(ExitCode::from(1));
+    }
+    // Each export must name a defined function; warn when its signature crosses
+    // the boundary as a pointer rather than a scalar.
+    use aury::ast::ModuleItem;
+    for name in &exports {
+        let function = m.items.iter().find_map(|item| match item {
+            ModuleItem::Fn(function) if &function.name == name => Some(function),
+            _ => None,
+        });
+        let Some(function) = function else {
+            return Err(format!("wasm-lib: --export names unknown function `{}`", name));
+        };
+        let pointer_type = |t: &aury::types::Type| {
+            !matches!(t, aury::types::Type::I64 | aury::types::Type::Bool | aury::types::Type::Unit)
+        };
+        if pointer_type(&function.ret) || function.params.iter().any(|p| pointer_type(&p.ty)) {
+            eprintln!(
+                "wasm-lib: note: `{}` has non-scalar params/return; those cross as linear-memory pointers and need host marshaling",
+                name
+            );
+        }
+    }
+    let ir = aury::lower::lower_module(&m)?;
+    let stem = std::path::Path::new(path.as_str())
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("module");
+    let ll = write_unique_temp_file(stem, "ll", &ir)?;
+    let module_path = out.unwrap_or_else(|| format!("{}.wasm", path.trim_end_matches(".aury")));
+    let runtime_c = write_unique_temp_file(&format!("rt_{}", stem), "c", NATIVE_RUNTIME_SOURCE)?;
+    let clang = resolve_wasm_clang();
+    let mut command = std::process::Command::new(&clang);
+    command
+        .arg("--target=wasm32-wasip1")
+        .arg("-mexec-model=reactor")
+        .arg("-O2")
+        .arg(&ll)
+        .arg(&runtime_c);
+    for name in &exports {
+        command.arg(format!("-Wl,--export=aury__{}", name));
+    }
+    command.arg("-o").arg(&module_path);
+    if let Some(sysroot) = resolve_wasi_sysroot() {
+        command.arg(format!("--sysroot={}", sysroot));
+    }
+    let status = command.output().map_err(|e| {
+        format!(
+            "{}: {} (need a clang with the WebAssembly target; install wasi-sdk \
+             and set WASI_SDK_PATH, or set AURY_WASM_CLANG)",
+            clang, e
+        )
+    })?;
+    let _ = std::fs::remove_file(&runtime_c);
+    if !status.status.success() {
+        eprintln!("wasm-lib build failed:\n{}", String::from_utf8_lossy(&status.stderr));
+        eprintln!("IR written to {:?}", ll);
+        return Ok(ExitCode::from(1));
+    }
+    let _ = std::fs::remove_file(&ll);
+    eprintln!("built {} → {} (wasm32-wasi reactor)", path, module_path);
+    eprintln!("  exports: _initialize, {}", exports.iter().map(|n| format!("aury__{}", n)).collect::<Vec<_>>().join(", "));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// ingest: the AI authoring surface. Read a JSON AST, convert to the canonical

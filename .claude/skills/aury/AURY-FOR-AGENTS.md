@@ -270,3 +270,10 @@ AURY_RESULT {"status":"accepted","patches_applied":1,"entry":"gcd","run":"12","n
 or, on failure, `status` is `rejected` (see the printed rejection JSON above the
 line) or `error`. Parse that final line; read the rejection JSON above it to pick
 your next repair.
+
+Beyond the interpreter and native (`aury compile`) backends, an accepted program
+can be built for `wasm32-wasi` with the **same** LLVM lowering: `aury wasm` (an
+executable module, run via wasmtime/wasmer) and `aury wasm-lib … --export <fn>`
+(a reactor module exporting `aury__<fn>` for a host such as a browser). These are
+backends only — authoring and repair never require the wasm toolchain. See
+`SKILL.md` for the flags and `moon-distance/` for a browser example.

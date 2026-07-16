@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Live Earth–Moon distance calculated by native Aury code." />
-    <title>Earth ↔ Moon · Native Aury</title>
+    <meta name="description" content="Live Earth–Moon distance calculated by Aury compiled to WebAssembly." />
+    <title>Earth ↔ Moon · Aury WASM</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -20,8 +20,8 @@
           <h1>Earth <span>↔</span> Moon</h1>
         </div>
         <div class="source-badge">
-          <span>NATIVE COMPUTE</span>
-          <strong>AURY · LLVM</strong>
+          <span>WASM COMPUTE</span>
+          <strong>AURY · WASI</strong>
         </div>
       </header>
 
@@ -32,7 +32,7 @@
             <strong id="distance-value">—</strong>
             <span>km</span>
           </div>
-          <p id="range-label" class="range-label">Requesting native calculation…</p>
+          <p id="range-label" class="range-label">Requesting wasm calculation…</p>
         </div>
         <div class="updated-block">
           <span>MODEL TIME · UTC</span>
@@ -71,7 +71,7 @@
         <article class="metric-card">
           <p class="label">NEXT SAMPLE</p>
           <strong><span id="countdown-value">—</span> <small>s</small></strong>
-          <p>Native rebuild cadence</p>
+          <p>Wasm rebuild cadence</p>
         </article>
       </section>
 
@@ -87,7 +87,7 @@
       </section>
 
       <footer>
-        <p><span id="status-dot" class="status-dot"></span><span id="status-text">Connecting to native Aury service</span></p>
+        <p><span id="status-dot" class="status-dot"></span><span id="status-text">Connecting to Aury wasm service</span></p>
         <p>46-term fixed-point lunar model · updates every minute</p>
       </footer>
     </main>
