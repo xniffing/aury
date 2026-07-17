@@ -129,10 +129,26 @@ pub enum Expr {
         scrut: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    /// (loop body)
+    /// (loop body) — evaluates `body` repeatedly. A `break` inside exits the
+    /// nearest enclosing loop and makes the loop expression evaluate to the
+    /// break value; without a `break`, the loop diverges (runs until a
+    /// `return`).
     Loop {
         id: NodeId,
         body: Box<Expr>,
+    },
+    /// (break value) — exit the nearest enclosing loop, yielding `value` as the
+    /// loop's result.
+    Break {
+        id: NodeId,
+        value: Box<Expr>,
+    },
+    /// (set name value) — reassign an existing mutable local binding. Yields
+    /// unit. The target must be a `let`-bound local (not a parameter).
+    Set {
+        id: NodeId,
+        name: String,
+        value: Box<Expr>,
     },
     Return {
         id: NodeId,
@@ -201,6 +217,8 @@ impl Expr {
             Expr::If { id, .. } => *id,
             Expr::Match { id, .. } => *id,
             Expr::Loop { id, .. } => *id,
+            Expr::Break { id, .. } => *id,
+            Expr::Set { id, .. } => *id,
             Expr::Return { id, .. } => *id,
             Expr::Block { id, .. } => *id,
             Expr::Region { id, .. } => *id,
@@ -581,6 +599,21 @@ fn build_expr(s: &Sexpr) -> Result<Expr, String> {
                     let body = Box::new(build_expr(xs.get(1).ok_or("loop body")?)?);
                     let id = sexpr_id(s);
                     Ok(Expr::Loop { id, body })
+                }
+                "break" => {
+                    // (break value); (break) yields unit.
+                    let value = match xs.get(1) {
+                        Some(v) => Box::new(build_expr(v)?),
+                        None => Box::new(Expr::Lit { id: sexpr_id(s), value: Lit::Unit }),
+                    };
+                    let id = sexpr_id(s);
+                    Ok(Expr::Break { id, value })
+                }
+                "set" => {
+                    let name = xs.get(1).and_then(|x| x.atom()).ok_or("set name")?.to_string();
+                    let value = Box::new(build_expr(xs.get(2).ok_or("set value")?)?);
+                    let id = sexpr_id(s);
+                    Ok(Expr::Set { id, name, value })
                 }
                 "return" => {
                     let value = Box::new(build_expr(xs.get(1).ok_or("return value")?)?);

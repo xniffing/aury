@@ -43,15 +43,18 @@ impl Value {
 enum Flow {
     Value(Value),
     Return(Value),
+    /// Exit the nearest enclosing loop with this value (`break`).
+    Break(Value),
 }
 
-/// Evaluate a child expression while preserving an enclosing `return`.
-/// Keeping this as a macro makes every expression arm use the same rule.
+/// Evaluate a child expression, propagating any non-local control flow
+/// (`return` or `break`) unchanged. Keeping this as a macro makes every
+/// expression arm use the same rule.
 macro_rules! value_or_return {
     ($interp:expr, $expr:expr, $scope:expr) => {
         match $interp.eval($expr, $scope)? {
             Flow::Value(value) => value,
-            Flow::Return(value) => return Ok(Flow::Return(value)),
+            other => return Ok(other),
         }
     };
 }
@@ -135,8 +138,11 @@ impl Interp {
                 )));
             }
         }
+        // A bare `break` at function top level (not inside a loop) is rejected
+        // by the validator; treat its value like a normal result if it reaches
+        // here.
         let ret = match self.eval(&f.body, &mut scope)? {
-            Flow::Value(v) | Flow::Return(v) => v,
+            Flow::Value(v) | Flow::Return(v) | Flow::Break(v) => v,
         };
         if !f.ensures.is_empty() {
             scope.insert(RESULT_BINDING.to_string(), ret.clone());
@@ -160,8 +166,8 @@ impl Interp {
         scope: &mut HashMap<String, Value>,
     ) -> Result<bool, InterpError> {
         match self.eval(e, scope)? {
-            Flow::Value(Value::Bool(b)) | Flow::Return(Value::Bool(b)) => Ok(b),
-            Flow::Value(other) | Flow::Return(other) => Err(InterpError(format!(
+            Flow::Value(Value::Bool(b)) | Flow::Return(Value::Bool(b)) | Flow::Break(Value::Bool(b)) => Ok(b),
+            Flow::Value(other) | Flow::Return(other) | Flow::Break(other) => Err(InterpError(format!(
                 "contract expression is not bool: {:?}",
                 other
             ))),
@@ -213,11 +219,23 @@ impl Interp {
                 let s = value_or_return!(self, scrut, scope);
                 for arm in arms {
                     if let Some(bindings) = match_pattern(&arm.pattern, &s) {
-                        let mut arm_scope = scope.clone();
+                        // Bind pattern variables in the current scope (saving any
+                        // shadowed values) rather than a clone, so a `set` inside
+                        // the arm mutates the enclosing binding — matching native
+                        // lowering, where arms share the same slots.
+                        let mut saved = Vec::new();
                         for (n, v) in bindings {
-                            arm_scope.insert(n, v);
+                            let previous = scope.insert(n.clone(), v);
+                            saved.push((n, previous));
                         }
-                        return self.eval(&arm.body, &mut arm_scope);
+                        let result = self.eval(&arm.body, scope);
+                        for (n, previous) in saved.into_iter().rev() {
+                            match previous {
+                                Some(p) => { scope.insert(n, p); }
+                                None => { scope.remove(&n); }
+                            }
+                        }
+                        return result;
                     }
                 }
                 Err(InterpError("match: no arm matched".into()))
@@ -225,10 +243,26 @@ impl Interp {
             Expr::Loop { body, .. } => {
                 loop {
                     match self.eval(body, scope)? {
+                        // `break v` exits the loop, which then yields `v`.
+                        Flow::Break(v) => return Ok(Flow::Value(v)),
+                        // `return` unwinds past the loop.
                         Flow::Return(v) => return Ok(Flow::Return(v)),
+                        // A normal iteration value is discarded; loop again.
                         Flow::Value(_) => {}
                     }
                 }
+            }
+            Expr::Break { value, .. } => {
+                let v = value_or_return!(self, value, scope);
+                Ok(Flow::Break(v))
+            }
+            Expr::Set { name, value, .. } => {
+                let v = value_or_return!(self, value, scope);
+                if !scope.contains_key(name) {
+                    return Err(InterpError(format!("set of unbound binding `{}`", name)));
+                }
+                scope.insert(name.clone(), v);
+                Ok(Flow::Value(Value::Unit))
             }
             Expr::Return { value, .. } => {
                 let v = value_or_return!(self, value, scope);
@@ -236,9 +270,10 @@ impl Interp {
             }
             Expr::Block { stmts, tail, .. } => {
                 for s in stmts {
+                    // Propagate any non-local control flow (`return`/`break`).
                     match self.eval(s, scope)? {
-                        Flow::Return(v) => return Ok(Flow::Return(v)),
                         Flow::Value(_) => {}
+                        other => return Ok(other),
                     }
                 }
                 self.eval(tail, scope)

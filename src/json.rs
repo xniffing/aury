@@ -236,6 +236,18 @@ fn typed_to_sexpr(kind: &str, obj: &serde_json::Map<String, Value>) -> Result<Se
             let body = json_to_sexpr(obj.get("body").ok_or("loop.body")?)?;
             Ok(list(vec![atom("loop"), body]))
         }
+        "break" => {
+            // value is optional; (break) yields unit.
+            match obj.get("value") {
+                Some(v) => Ok(list(vec![atom("break"), json_to_sexpr(v)?])),
+                None => Ok(list(vec![atom("break")])),
+            }
+        }
+        "set" => {
+            let name = jstr("name").ok_or("set.name")?;
+            let value = json_to_sexpr(obj.get("value").ok_or("set.value")?)?;
+            Ok(list(vec![atom("set"), atom(name), value]))
+        }
         "return" => {
             let value = json_to_sexpr(obj.get("value").ok_or("return.value")?)?;
             Ok(list(vec![atom("return"), value]))

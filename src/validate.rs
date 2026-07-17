@@ -24,6 +24,9 @@ struct Binding {
     #[allow(dead_code)]
     region: Option<String>,
     is_cap: bool,
+    /// True for function parameters (and `result`): values, not mutable
+    /// locals, so `set` on them is rejected. `let` bindings are `false`.
+    is_param: bool,
 }
 
 struct Checker {
@@ -39,6 +42,10 @@ struct Checker {
     regions_in_scope: Vec<String>,
     /// A counter for repair ids.
     repair_counter: u32,
+    /// Stack of enclosing loops' break value types (innermost last). `None`
+    /// means no `break` seen yet for that loop; `Some(t)` records the agreed
+    /// break type. A `break` outside any loop finds an empty stack.
+    break_tys: Vec<Option<Type>>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +132,7 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                 declared_effects: f.effects.clone(),
                 regions_in_scope: Vec::new(),
                 repair_counter: 0,
+                break_tys: Vec::new(),
             };
             let mut scope: HashMap<String, Binding> = HashMap::new();
             for p in &f.params {
@@ -140,6 +148,7 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                         moved: false,
                         region,
                         is_cap: p.is_cap,
+                        is_param: true,
                     },
                 );
             }
@@ -197,6 +206,7 @@ fn contract_scope(f: &FnDef, with_result: bool) -> HashMap<String, Binding> {
                 moved: false,
                 region: region_of(&p.ty).map(|s| s.to_string()),
                 is_cap: p.is_cap,
+                is_param: true,
             },
         );
     }
@@ -209,10 +219,41 @@ fn contract_scope(f: &FnDef, with_result: bool) -> HashMap<String, Binding> {
                 moved: false,
                 region: region_of(&f.ret).map(|s| s.to_string()),
                 is_cap: false,
+                is_param: true,
             },
         );
     }
     scope
+}
+
+/// Does `e` contain a `break` that targets the immediately enclosing loop?
+/// Descends through control flow but stops at nested `loop`s, whose breaks
+/// belong to them, not to us.
+fn loop_has_break(e: &Expr) -> bool {
+    match e {
+        Expr::Break { .. } => true,
+        Expr::Loop { .. } => false,
+        Expr::Let { init, body, .. } => loop_has_break(init) || loop_has_break(body),
+        Expr::Set { value, .. } => loop_has_break(value),
+        Expr::Call { args, .. } => args.iter().any(loop_has_break),
+        Expr::If { cond, then, els, .. } => {
+            loop_has_break(cond) || loop_has_break(then) || loop_has_break(els)
+        }
+        Expr::Match { scrut, arms, .. } => {
+            loop_has_break(scrut) || arms.iter().any(|arm| loop_has_break(&arm.body))
+        }
+        Expr::Block { stmts, tail, .. } => {
+            stmts.iter().any(loop_has_break) || loop_has_break(tail)
+        }
+        Expr::Region { body, .. } => loop_has_break(body),
+        Expr::Return { value, .. } => loop_has_break(value),
+        Expr::Copy { value, .. } | Expr::Cast { value, .. } => loop_has_break(value),
+        Expr::VecNew { elems, .. } => elems.iter().any(loop_has_break),
+        Expr::Index { target, index, .. } => loop_has_break(target) || loop_has_break(index),
+        Expr::Len { target, .. } | Expr::Field { target, .. } => loop_has_break(target),
+        Expr::StructNew { fields, .. } => fields.iter().any(|(_, v)| loop_has_break(v)),
+        Expr::Lit { .. } | Expr::Ref { .. } => false,
+    }
 }
 
 fn is_affine(ty: &Type) -> bool {
@@ -230,7 +271,13 @@ impl Checker {
     /// sibling — the pattern that lets `loop` break out via `return`.
     fn diverges(&self, e: &Expr) -> bool {
         match e {
-            Expr::Return { .. } | Expr::Loop { .. } => true,
+            // `return` and `break` transfer control elsewhere. A `loop`
+            // diverges only if nothing inside it can `break` out (otherwise it
+            // produces the break value).
+            Expr::Return { .. } | Expr::Break { .. } => true,
+            Expr::Loop { body, .. } => !loop_has_break(body),
+            // `set` yields unit; it diverges only if evaluating its value does.
+            Expr::Set { value, .. } => self.diverges(value),
             Expr::Let { init, body, .. } => self.diverges(init) || self.diverges(body),
             Expr::Call { args, .. } => args.iter().any(|arg| self.diverges(arg)),
             Expr::If { cond, then, els, .. } => {
@@ -297,6 +344,7 @@ impl Checker {
                         moved: false,
                         region: region.clone(),
                         is_cap: false,
+                        is_param: false,
                     },
                 );
                 let body_ty = self.check_expr(body, scope, ret_ty);
@@ -405,9 +453,44 @@ impl Checker {
                 agreed.unwrap_or(Type::Unit)
             }
             Expr::Loop { id: _, body } => {
-                // A loop exits via `return` or runs forever; it diverges. Its
-                // type (for context) is the body's type.
-                self.check_expr(body, scope, ret_ty)
+                // Open a fresh break-target frame; each `break` inside records
+                // its value type here. The loop's type is the agreed break type,
+                // or unit if the loop has no `break` (and so diverges).
+                self.break_tys.push(None);
+                let _ = self.check_expr(body, scope, ret_ty);
+                self.break_tys.pop().flatten().unwrap_or(Type::Unit)
+            }
+            Expr::Break { id, value } => {
+                let val_ty = self.check_expr(value, scope, ret_ty);
+                if self.break_tys.is_empty() {
+                    self.reject_break_outside_loop(*id);
+                } else if !self.diverges(value) {
+                    let existing = self.break_tys.last().unwrap().clone();
+                    match existing {
+                        None => *self.break_tys.last_mut().unwrap() = Some(val_ty),
+                        Some(prev) => {
+                            if !self.types_agree(&prev, &val_ty) {
+                                self.reject_break_type_mismatch(*id, &prev, &val_ty, value);
+                            }
+                        }
+                    }
+                }
+                Type::Unit // break diverges; use unit as a placeholder
+            }
+            Expr::Set { id, name, value } => {
+                let val_ty = self.check_expr(value, scope, ret_ty);
+                // Extract what we need before calling self methods (borrows).
+                let target = scope.get(name).map(|b| (b.is_param, b.ty.clone()));
+                match target {
+                    None => self.reject_set_unbound(*id, name),
+                    Some((true, ty)) => self.reject_set_of_param(*id, name, &ty),
+                    Some((false, ty)) => {
+                        if !self.diverges(value) && !self.types_agree(&val_ty, &ty) {
+                            self.reject_set_type_mismatch(*id, name, &ty, &val_ty, value);
+                        }
+                    }
+                }
+                Type::Unit // set yields unit
             }
             Expr::Return { id, value } => {
                 let val_ty = self.check_expr(value, scope, ret_ty);
@@ -579,6 +662,7 @@ impl Checker {
                         moved: false,
                         region: region_of(ty).map(|s| s.to_string()),
                         is_cap: false,
+                        is_param: false,
                     },
                 );
             }
@@ -678,6 +762,8 @@ impl Checker {
                 }
             }
             Expr::Loop { body, .. } => self.collect_effects_into(body, row),
+            Expr::Break { value, .. } => self.collect_effects_into(value, row),
+            Expr::Set { value, .. } => self.collect_effects_into(value, row),
             Expr::Return { value, .. } => self.collect_effects_into(value, row),
             Expr::Block { stmts, tail, .. } => {
                 for s in stmts {
@@ -883,6 +969,80 @@ impl Checker {
             kind: "RETURN_TYPE_MISMATCH".into(),
             node: id,
             path: "return".into(),
+            expected: format!("{:?}", expected),
+            received: format!("{:?}", received),
+            context: HashMap::new(),
+            repairs,
+        });
+    }
+
+    fn reject_break_outside_loop(&mut self, id: NodeId) {
+        self.rejections.push(Rejection {
+            gate: Gate::Type,
+            kind: "BREAK_OUTSIDE_LOOP".into(),
+            node: id,
+            path: "break".into(),
+            expected: "a `break` inside an enclosing `loop`".into(),
+            received: "`break` with no enclosing loop".into(),
+            context: HashMap::new(),
+            // No known-good structural replacement without the surrounding
+            // context; the fix is to move the `break` into a loop or use
+            // `return` to leave the function.
+            repairs: vec![],
+        });
+    }
+
+    fn reject_break_type_mismatch(&mut self, id: NodeId, expected: &Type, received: &Type, _val: &Expr) {
+        let repairs = build_type_repairs(self, id, expected, received);
+        self.rejections.push(Rejection {
+            gate: Gate::Type,
+            kind: "BREAK_TYPE_MISMATCH".into(),
+            node: id,
+            path: "break".into(),
+            expected: format!("{:?}", expected),
+            received: format!("{:?}", received),
+            context: HashMap::new(),
+            repairs,
+        });
+    }
+
+    fn reject_set_unbound(&mut self, id: NodeId, name: &str) {
+        self.rejections.push(Rejection {
+            gate: Gate::Type,
+            kind: "SET_UNBOUND".into(),
+            node: id,
+            path: name.into(),
+            expected: "an existing local binding to reassign".into(),
+            received: format!("`set` of unbound name `{}`", name),
+            context: HashMap::new(),
+            // Introducing the binding is a structural change to the enclosing
+            // scope, not a local node rewrite; leave to the model.
+            repairs: vec![],
+        });
+    }
+
+    fn reject_set_of_param(&mut self, id: NodeId, name: &str, ty: &Type) {
+        self.rejections.push(Rejection {
+            gate: Gate::Type,
+            kind: "SET_OF_PARAM".into(),
+            node: id,
+            path: name.into(),
+            expected: "a mutable local (`let`) binding".into(),
+            received: format!("`set` of parameter `{}` (of type {:?})", name, ty),
+            context: HashMap::new(),
+            // Fix: introduce a mutable local seeded from the parameter, e.g.
+            // `(let name <ty> (ref name) ...)`, and mutate that instead.
+            repairs: vec![],
+        });
+    }
+
+    fn reject_set_type_mismatch(&mut self, id: NodeId, name: &str, expected: &Type, received: &Type, _val: &Expr) {
+        let repairs = build_type_repairs(self, id, expected, received);
+        self.rejections.push(Rejection {
+            gate: Gate::Type,
+            kind: "SET_TYPE_MISMATCH".into(),
+            node: id,
+            path: name.into(),
             expected: format!("{:?}", expected),
             received: format!("{:?}", received),
             context: HashMap::new(),
