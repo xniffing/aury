@@ -79,12 +79,26 @@ body {
   display: flex; flex-direction: column; justify-content: flex-end;
   position: relative; overflow: hidden;
 }
+.display-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 4px; min-height: 26px;
+}
 .badge {
-  position: absolute; top: 12px; left: 14px;
   font-family: "DM Mono", ui-monospace, monospace; font-size: .74rem;
   padding: 4px 10px; border-radius: 999px;
   border: 1px solid var(--line); color: var(--muted);
 }
+.mode-toggle {
+  margin-left: auto;
+  font-family: "DM Mono", ui-monospace, monospace; font-size: .74rem;
+  letter-spacing: .12em; font-weight: 700;
+  padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel);
+  color: var(--muted); transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.mode-toggle:hover { color: var(--ink); border-color: var(--accent); }
+.mode-toggle[data-mode="float"] { color: var(--accent-2); border-color: rgba(99, 230, 195, .45); background: rgba(99, 230, 195, .1); }
+.mode-toggle:disabled { opacity: .4; cursor: not-allowed; }
 .badge[data-tone="yes"] { color: var(--accent-2); border-color: rgba(99, 230, 195, .4); background: rgba(99, 230, 195, .1); }
 .badge[data-tone="no"] { color: var(--danger); border-color: rgba(255, 122, 122, .4); background: rgba(255, 122, 122, .1); }
 .expr { color: var(--muted); font-family: "DM Mono", ui-monospace, monospace; font-size: .95rem; min-height: 1.2em; text-align: right; }
