@@ -7,7 +7,7 @@
 //! fixes.
 
 use crate::ast::*;
-use crate::id::NodeId;
+use crate::id::{sexpr_id, NodeId};
 use crate::repair::*;
 use crate::sexpr::Sexpr;
 use crate::types::{EffectRow, Type};
@@ -193,6 +193,10 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                 let mut cscope = contract_scope(f, true);
                 c.check_contract(ens, &mut cscope, "ensures");
             }
+            // Region aliasing: two `mut` references sharing a region may overlap,
+            // so they are statically rejected (the region is the aliasing domain;
+            // distinct regions are provably disjoint).
+            c.check_region_aliasing(f);
             total.extend(c.rejections);
         }
     }
@@ -207,6 +211,61 @@ fn region_of(ty: &Type) -> Option<&str> {
     match ty {
         Type::Ref { region, .. } => Some(region),
         _ => None,
+    }
+}
+
+/// Serialize a `Type` back to its canonical s-expression, byte-identical to what
+/// `Type::parse` accepts, so a region-rename repair targets the exact type node
+/// by its content-addressed id.
+fn type_to_sexpr(ty: &Type) -> Sexpr {
+    fn atom(s: &str) -> Sexpr { Sexpr::Atom(s.into()) }
+    match ty {
+        Type::I64 => atom("i64"),
+        Type::F64 => atom("f64"),
+        Type::Bool => atom("bool"),
+        Type::Str => atom("str"),
+        Type::Unit => atom("unit"),
+        Type::Region => atom("region"),
+        Type::Vec(t) => Sexpr::List(vec![atom("vec"), type_to_sexpr(t)]),
+        Type::Struct(n) => Sexpr::List(vec![atom("struct"), atom(n)]),
+        Type::Ref { region, mutable, ty } => Sexpr::List(vec![
+            atom("ref"),
+            atom(region),
+            atom(if *mutable { "mut" } else { "ref" }),
+            type_to_sexpr(ty),
+        ]),
+        Type::Result(ok, err) => {
+            Sexpr::List(vec![atom("result"), type_to_sexpr(ok), type_to_sexpr(err)])
+        }
+    }
+}
+
+/// Pick a region name disjoint from every name in `used`, derived from `base`
+/// (`r` -> `r_s1`, `r_s2`, ...). Deterministic so repairs are reproducible.
+fn fresh_region(base: &str, used: &HashSet<String>) -> String {
+    let mut k = 1;
+    loop {
+        let candidate = format!("{}_s{}", base, k);
+        if !used.contains(&candidate) {
+            return candidate;
+        }
+        k += 1;
+    }
+}
+
+/// Collect every region name mentioned anywhere in a type (for freshness).
+fn regions_in_type(ty: &Type, out: &mut HashSet<String>) {
+    match ty {
+        Type::Ref { region, ty, .. } => {
+            out.insert(region.clone());
+            regions_in_type(ty, out);
+        }
+        Type::Vec(t) => regions_in_type(t, out),
+        Type::Result(a, b) => {
+            regions_in_type(a, out);
+            regions_in_type(b, out);
+        }
+        _ => {}
     }
 }
 
@@ -1180,6 +1239,109 @@ impl Checker {
             received: format!("{:?}", received),
             context: HashMap::new(),
             repairs,
+        });
+    }
+
+    /// Region-aliasing pass: within a function signature, two `mut` references
+    /// naming the same region can overlap, so they are rejected pointwise. The
+    /// repair renames one reference's region to a fresh, disjoint region (the
+    /// proposal's "split into two regions").
+    fn check_region_aliasing(&mut self, f: &FnDef) {
+        // All region names in the signature (for picking a disjoint fresh name).
+        let mut used_regions: HashSet<String> = HashSet::new();
+        for p in &f.params {
+            regions_in_type(&p.ty, &mut used_regions);
+        }
+        regions_in_type(&f.ret, &mut used_regions);
+        // Group reference params by region. A `mut` reference is exclusive: it
+        // may not share its region with any other reference (mut or shared).
+        // Two shared references may coexist, so a group with no `mut` is fine.
+        let mut by_region: HashMap<String, Vec<&Param>> = HashMap::new();
+        for p in &f.params {
+            if let Type::Ref { region, .. } = &p.ty {
+                by_region.entry(region.clone()).or_default().push(p);
+            }
+        }
+        // Deterministic order over regions so repairs are reproducible.
+        let mut regions: Vec<&String> = by_region.keys().collect();
+        regions.sort();
+        for region in regions {
+            let members = &by_region[region];
+            let has_mut = members
+                .iter()
+                .any(|p| matches!(&p.ty, Type::Ref { mutable: true, .. }));
+            if members.len() < 2 || !has_mut {
+                continue;
+            }
+            // Keep the first `mut` reference in place; rename another member out.
+            let first = members
+                .iter()
+                .find(|p| matches!(&p.ty, Type::Ref { mutable: true, .. }))
+                .unwrap();
+            let victim = members
+                .iter()
+                .find(|p| p.name != first.name)
+                .unwrap();
+            let fresh = fresh_region(region, &used_regions);
+            let renamed = match &victim.ty {
+                Type::Ref { mutable, ty, .. } => Type::Ref {
+                    region: fresh.clone(),
+                    mutable: *mutable,
+                    ty: ty.clone(),
+                },
+                _ => continue,
+            };
+            let ty_node = sexpr_id(&type_to_sexpr(&victim.ty));
+            self.reject_alias_conflict(
+                ty_node,
+                region,
+                &first.name,
+                &victim.name,
+                &fresh,
+                type_to_sexpr(&renamed),
+            );
+        }
+    }
+
+    fn reject_alias_conflict(
+        &mut self,
+        ty_node: NodeId,
+        region: &str,
+        first: &str,
+        second: &str,
+        fresh: &str,
+        renamed: Sexpr,
+    ) {
+        let rid = self.next_repair_id();
+        self.rejections.push(Rejection {
+            gate: Gate::Region,
+            kind: "ALIAS_CONFLICT".into(),
+            node: ty_node,
+            path: format!("region `{}`", region),
+            expected: "at most one `mut` reference per region".into(),
+            received: format!(
+                "region `{}` borrowed mut by `{}` and also by `{}`",
+                region, first, second
+            ),
+            context: {
+                let mut m = HashMap::new();
+                m.insert("region".into(), region.to_string());
+                m.insert("conflicts".into(), format!("{}, {}", first, second));
+                m
+            },
+            repairs: vec![Repair {
+                id: rid,
+                action: "split_region".into(),
+                with: Some(renamed),
+                cost: 2,
+                preserves_effects: true,
+                preserves_contracts: true,
+                propagates: vec![],
+                note: format!(
+                    "Split the region: move `{}` into a fresh disjoint region `{}`.",
+                    second, fresh
+                ),
+            }],
         });
     }
 

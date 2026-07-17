@@ -212,6 +212,64 @@ fn repair_loop_widens_existing_effect_row_in_place() {
     assert!(check_module(&m).is_accepted());
 }
 
+// ---- Track C: region aliasing ----
+
+#[test]
+fn alias_conflict_two_mut_refs_in_one_region() {
+    let src = r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref r mut i64))) (ret i64)
+    (body (lit 0))))"#;
+    let m = module(src);
+    match check_module(&m) {
+        ValidationOutcome::Rejected(rejs) => {
+            assert!(rejs.iter().any(|r| r.kind == "ALIAS_CONFLICT" && r.gate == Gate::Region), "{:?}", rejs);
+        }
+        _ => panic!("expected ALIAS_CONFLICT"),
+    }
+}
+
+#[test]
+fn alias_mut_plus_shared_conflicts() {
+    let src = r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref r ref i64))) (ret i64)
+    (body (lit 0))))"#;
+    let m = module(src);
+    assert!(matches!(check_module(&m), ValidationOutcome::Rejected(_)));
+}
+
+#[test]
+fn distinct_regions_and_shared_borrows_are_ok() {
+    // two muts in *different* regions: provably disjoint, accepted
+    let a = module(r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref s mut i64))) (ret i64)
+    (body (lit 0))))"#);
+    assert!(check_module(&a).is_accepted(), "{:?}", check_module(&a));
+    // two shared refs in one region: shared aliasing is allowed
+    let b = module(r#"
+(module m
+  (fn f (params (a (ref r ref i64)) (b (ref r ref i64))) (ret i64)
+    (body (lit 0))))"#);
+    assert!(check_module(&b).is_accepted(), "{:?}", check_module(&b));
+}
+
+#[test]
+fn repair_loop_splits_conflicting_region() {
+    // The loop mechanically renames one reference's region to a fresh disjoint
+    // one, resolving the aliasing conflict.
+    let src = r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref r mut i64))) (ret i64)
+    (body (lit 0))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should split the region: {:?}", res.log);
+    assert!(res.source.contains("r_s1"), "repaired source: {}", res.source);
+    let m = module(&res.source);
+    assert!(check_module(&m).is_accepted());
+}
+
 // ---- Track B: growable aggregates + affine move-tracking ----
 
 const VEC_BUILD: &str = r#"
