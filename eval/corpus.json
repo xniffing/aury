@@ -43,6 +43,15 @@
       "program": "../examples/agent/dice.aury"
     },
     {
+      "name": "effect-leak",
+      "intent": "Uses the rng effect without declaring it; the loop should mechanically widen the effect row and accept.",
+      "program": "../examples/agent/effect-leak.aury",
+      "checks": [
+        { "fn": "seeded-add", "args": ["5"], "expect": "5" },
+        { "fn": "seeded-add", "args": ["-3"], "expect": "-3" }
+      ]
+    },
+    {
       "name": "calculator",
       "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
       "program": "../projects/calculator/calculator.json",

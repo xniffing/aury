@@ -584,6 +584,14 @@ impl Lowerer {
             Expr::Cast { target, value, .. } => self.lower_cast(target, value),
             Expr::VecNew { ty, elems, .. } => self.lower_vec_new(ty, elems),
             Expr::Index { target, index, .. } => self.lower_index(target, index),
+            Expr::VecPush { .. } => {
+                // Growable-vec native lowering (dynamic allocation + descriptors)
+                // is Track B2; until then, record an unsupported-feature error so
+                // `aury ll` skips the fn and native runs fail cleanly rather than
+                // diverging from the interpreter (the parity invariant).
+                self.err("vec-push: native lowering not implemented yet (v0.2 Track B2)");
+                (None, "0".into(), false)
+            }
             Expr::Len { target, .. } => self.lower_len(target),
             Expr::StructNew { name, fields, .. } => self.lower_struct_new(name, fields),
             Expr::Field { target, field, .. } => self.lower_field(target, field),
@@ -1442,6 +1450,7 @@ impl Lowerer {
                 Type::Vec(t) => *t,
                 _ => Type::Unit,
             },
+            Expr::VecPush { target, .. } => self.infer_env(target, env),
             Expr::Len { .. } => Type::I64,
             Expr::StructNew { name, .. } => Type::Struct(name.clone()),
             Expr::Field { target, field, .. } => match self.infer_env(target, env) {
@@ -1499,6 +1508,9 @@ impl Lowerer {
                 Self::expr_diverges(value)
             }
             Expr::VecNew { elems, .. } => elems.iter().any(Self::expr_diverges),
+            Expr::VecPush { target, value, .. } => {
+                Self::expr_diverges(target) || Self::expr_diverges(value)
+            }
             Expr::Index { target, index, .. } => {
                 Self::expr_diverges(target) || Self::expr_diverges(index)
             }
@@ -1540,6 +1552,9 @@ impl Lowerer {
             Expr::Return { value, .. } => Self::loop_body_has_break(value),
             Expr::Copy { value, .. } | Expr::Cast { value, .. } => Self::loop_body_has_break(value),
             Expr::VecNew { elems, .. } => elems.iter().any(Self::loop_body_has_break),
+            Expr::VecPush { target, value, .. } => {
+                Self::loop_body_has_break(target) || Self::loop_body_has_break(value)
+            }
             Expr::Index { target, index, .. } => {
                 Self::loop_body_has_break(target) || Self::loop_body_has_break(index)
             }
@@ -1588,6 +1603,9 @@ impl Lowerer {
             Expr::Index { target, index, .. } => self
                 .first_break_type(target, env)
                 .or_else(|| self.first_break_type(index, env)),
+            Expr::VecPush { target, value, .. } => self
+                .first_break_type(target, env)
+                .or_else(|| self.first_break_type(value, env)),
             Expr::Len { target, .. } | Expr::Field { target, .. } => self.first_break_type(target, env),
             Expr::StructNew { fields, .. } => {
                 fields.iter().find_map(|(_, v)| self.first_break_type(v, env))

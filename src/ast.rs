@@ -182,6 +182,15 @@ pub enum Expr {
         target: Box<Expr>,
         index: Box<Expr>,
     },
+    /// (vec-push target value) — append `value`, yielding the grown vec. The
+    /// `target` is consumed (moved): when it is a bare `(ref v)` the binding `v`
+    /// is marked moved, so a later plain use is `USE_AFTER_MOVE`. Wrap the target
+    /// in `(copy v)` to keep the original live.
+    VecPush {
+        id: NodeId,
+        target: Box<Expr>,
+        value: Box<Expr>,
+    },
     /// (len target)
     Len {
         id: NodeId,
@@ -225,6 +234,7 @@ impl Expr {
             Expr::Copy { id, .. } => *id,
             Expr::VecNew { id, .. } => *id,
             Expr::Index { id, .. } => *id,
+            Expr::VecPush { id, .. } => *id,
             Expr::Len { id, .. } => *id,
             Expr::StructNew { id, .. } => *id,
             Expr::Field { id, .. } => *id,
@@ -681,6 +691,12 @@ fn build_expr(s: &Sexpr) -> Result<Expr, String> {
                     let target = Box::new(build_expr(xs.get(1).ok_or("len target")?)?);
                     let id = sexpr_id(s);
                     Ok(Expr::Len { id, target })
+                }
+                "vec-push" => {
+                    let target = Box::new(build_expr(xs.get(1).ok_or("vec-push target")?)?);
+                    let value = Box::new(build_expr(xs.get(2).ok_or("vec-push value")?)?);
+                    let id = sexpr_id(s);
+                    Ok(Expr::VecPush { id, target, value })
                 }
                 "new-struct" => {
                     let name = xs.get(1).and_then(|x| x.atom()).ok_or("struct name")?.to_string();

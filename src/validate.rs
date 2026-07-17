@@ -38,6 +38,10 @@ struct Checker {
     /// The function's declared effect row (for effect checking against the
     /// body's actual effects).
     declared_effects: EffectRow,
+    /// The node id of the enclosing `(fn ...)` form. Effect-row repairs target
+    /// the whole function so the driver can widen/insert its `(effects ...)`
+    /// clause mechanically.
+    fn_id: NodeId,
     /// The function's parameter names → regions (for region checking).
     regions_in_scope: Vec<String>,
     /// A counter for repair ids.
@@ -130,6 +134,7 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                 rejections: Vec::new(),
                 applied: HashMap::new(),
                 declared_effects: f.effects.clone(),
+                fn_id: f.id,
                 regions_in_scope: Vec::new(),
                 repair_counter: 0,
                 break_tys: Vec::new(),
@@ -157,11 +162,24 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                 c.reject_return_type(f.body.id(), &f.ret, &body_ty, &f.body);
             }
             // Effect check: collect the body's effects and compare against the
-            // declared row. (Simplified: pure functions must not call effectful
-            // ops.)
+            // declared row. Three directions, all carrying mechanical repairs:
+            //   under-declared → widen; unknown capability → drop it;
+            //   over-declared (least-privilege) → narrow to what the body uses.
             let body_effects = c.collect_effects(&f.body);
+            let unknown: Vec<String> = f
+                .effects
+                .caps
+                .iter()
+                .filter(|cap| !is_known_capability(cap))
+                .cloned()
+                .collect();
+            if !unknown.is_empty() {
+                c.reject_unknown_capability(&f.effects, &unknown);
+            }
             if !f.effects.admits(&body_effects) {
-                c.reject_effect(&f.body.id(), &f.effects, &body_effects);
+                c.reject_effect(&f.effects, &body_effects);
+            } else if unknown.is_empty() && effect_over_declared(&f.effects, &body_effects) {
+                c.reject_effect_over_declared(&f.effects, &body_effects);
             }
             // Contract gate: requires/ensures must be pure boolean predicates
             // over the parameters (and `result`, for ensures). Names outside
@@ -190,6 +208,49 @@ fn region_of(ty: &Type) -> Option<&str> {
         Type::Ref { region, .. } => Some(region),
         _ => None,
     }
+}
+
+/// The fixed capability vocabulary. Effect rows may only name these; anything
+/// else is an `UNKNOWN_CAPABILITY` rejection. Capabilities with no OS shim yet
+/// (everything but `rng` in v0) are still declarable and checked structurally —
+/// they are deterministically stubbed at runtime when their ops arrive.
+pub const KNOWN_CAPABILITIES: &[&str] = &[
+    "rng", "clock", "log", "net", "state", "fs read", "fs write",
+];
+
+/// True if `cap` is a member of the capability vocabulary.
+pub fn is_known_capability(cap: &str) -> bool {
+    KNOWN_CAPABILITIES.contains(&cap)
+}
+
+/// A row over-declares (violates least-privilege) when it is not pure and names
+/// a capability the body never exercises. A pure body over any non-pure row is
+/// the fully-narrowable case.
+fn effect_over_declared(declared: &EffectRow, used: &EffectRow) -> bool {
+    if declared.pure {
+        return false;
+    }
+    declared.caps.iter().any(|c| !used.caps.contains(c))
+}
+
+/// Serialize an effect row back to its `(effects ...)` s-expression form, so a
+/// `widen_effect_row` repair can be applied to source mechanically. A multi-word
+/// capability (e.g. `"fs read"`) becomes a nested list `(fs read)`; a bare
+/// capability becomes an atom. A pure row serializes to `(effects)` — the driver
+/// treats an empty `(effects)` as "remove the clause" (i.e. make the fn pure).
+fn effect_row_to_sexpr(row: &EffectRow) -> Sexpr {
+    let mut items = vec![Sexpr::Atom("effects".into())];
+    for cap in &row.caps {
+        let words: Vec<&str> = cap.split_whitespace().collect();
+        if words.len() <= 1 {
+            items.push(Sexpr::Atom(cap.clone()));
+        } else {
+            items.push(Sexpr::List(
+                words.into_iter().map(|w| Sexpr::Atom(w.into())).collect(),
+            ));
+        }
+    }
+    Sexpr::List(items)
 }
 
 /// Build the checking scope for a contract clause: the function's parameters,
@@ -250,6 +311,7 @@ fn loop_has_break(e: &Expr) -> bool {
         Expr::Copy { value, .. } | Expr::Cast { value, .. } => loop_has_break(value),
         Expr::VecNew { elems, .. } => elems.iter().any(loop_has_break),
         Expr::Index { target, index, .. } => loop_has_break(target) || loop_has_break(index),
+        Expr::VecPush { target, value, .. } => loop_has_break(target) || loop_has_break(value),
         Expr::Len { target, .. } | Expr::Field { target, .. } => loop_has_break(target),
         Expr::StructNew { fields, .. } => fields.iter().any(|(_, v)| loop_has_break(v)),
         Expr::Lit { .. } | Expr::Ref { .. } => false,
@@ -294,6 +356,7 @@ impl Checker {
             Expr::Copy { value, .. } | Expr::Cast { value, .. } => self.diverges(value),
             Expr::VecNew { elems, .. } => elems.iter().any(|elem| self.diverges(elem)),
             Expr::Index { target, index, .. } => self.diverges(target) || self.diverges(index),
+            Expr::VecPush { target, value, .. } => self.diverges(target) || self.diverges(value),
             Expr::Len { target, .. } | Expr::Field { target, .. } => self.diverges(target),
             Expr::StructNew { fields, .. } => {
                 fields.iter().any(|(_, value)| self.diverges(value))
@@ -488,6 +551,12 @@ impl Checker {
                         if !self.diverges(value) && !self.types_agree(&val_ty, &ty) {
                             self.reject_set_type_mismatch(*id, name, &ty, &val_ty, value);
                         }
+                        // Reassignment revives the binding: `(set acc (vec-push
+                        // acc x))` moves `acc` inside the push, then rebinds it,
+                        // so the accumulator loop pattern type-checks.
+                        if let Some(b) = scope.get_mut(name) {
+                            b.moved = false;
+                        }
                     }
                 }
                 Type::Unit // set yields unit
@@ -514,7 +583,22 @@ impl Checker {
                 ty
             }
             Expr::Copy { id, value } => {
-                let v = self.check_expr(value, scope, ret_ty);
+                // `copy` yields a fresh independent value and is permitted even on
+                // a binding that has already been moved (v0 aggregate values are
+                // structurally copyable). This is what makes the `insert_copy`
+                // repair for USE_AFTER_MOVE converge: replacing a moved `(ref v)`
+                // with `(copy v)` type-checks instead of re-triggering the move.
+                let v = if let Expr::Ref { name, .. } = value.as_ref() {
+                    match scope.get(name) {
+                        Some(b) => b.ty.clone(),
+                        None => {
+                            self.reject_unbound_ref(value.id(), name);
+                            Type::Unit
+                        }
+                    }
+                } else {
+                    self.check_expr(value, scope, ret_ty)
+                };
                 if !self.diverges(value) && !is_affine(&v) {
                     self.reject_copy_of_non_affine(*id, &v);
                 }
@@ -565,6 +649,39 @@ impl Checker {
                             self.reject_len_non_vec(*id, &t);
                             Type::I64
                         }
+                    }
+                }
+            }
+            Expr::VecPush { id, target, value } => {
+                // Check the target first (fires USE_AFTER_MOVE if it is a binding
+                // that was already moved), then consume it.
+                let t = self.check_expr(target, scope, ret_ty);
+                // vec-push takes ownership of its target. When the target is a
+                // bare `(ref v)` of an affine binding, mark `v` moved so a later
+                // plain use is rejected; a `(copy v)` target is non-consuming.
+                if let Expr::Ref { name, .. } = target.as_ref() {
+                    if let Some(b) = scope.get_mut(name) {
+                        if b.affine {
+                            b.moved = true;
+                        }
+                    }
+                }
+                // Now check the appended value — if it re-uses the just-moved
+                // target binding, that surfaces here as USE_AFTER_MOVE.
+                let v = self.check_expr(value, scope, ret_ty);
+                if self.diverges(target) {
+                    return Type::Unit;
+                }
+                match &t {
+                    Type::Vec(inner) => {
+                        if !self.diverges(value) && !self.types_agree(&v, inner) {
+                            self.reject_type_mismatch(value.id(), inner, &v, "vec-push value");
+                        }
+                        t.clone()
+                    }
+                    _ => {
+                        self.reject_push_non_vec(*id, &t);
+                        Type::Unit
                     }
                 }
             }
@@ -789,6 +906,10 @@ impl Checker {
             Expr::Index { target, index, .. } => {
                 self.collect_effects_into(target, row);
                 self.collect_effects_into(index, row);
+            }
+            Expr::VecPush { target, value, .. } => {
+                self.collect_effects_into(target, row);
+                self.collect_effects_into(value, row);
             }
             Expr::Len { target, .. } => self.collect_effects_into(target, row),
             Expr::StructNew { fields, .. } => {
@@ -1062,19 +1183,22 @@ impl Checker {
         });
     }
 
-    fn reject_effect(&mut self, id: &NodeId, declared: &EffectRow, actual: &EffectRow) {
+    fn reject_effect(&mut self, declared: &EffectRow, actual: &EffectRow) {
         let missing: Vec<String> = actual
             .caps
             .iter()
             .filter(|c| !declared.caps.contains(c))
             .cloned()
             .collect();
-                let _rid1 = self.next_repair_id();
-self.rejections.push(Rejection {
+        let widened = declared.union_with(actual);
+        let rid = self.next_repair_id();
+        self.rejections.push(Rejection {
             gate: Gate::Effect,
             kind: "EFFECT_EXCEEDS_DECLARED".into(),
-            node: *id,
-            path: "fn body".into(),
+            // Target the whole `(fn ...)` form: the fix rewrites its effect row,
+            // not the body node where the effect was observed.
+            node: self.fn_id,
+            path: "fn effect row".into(),
             expected: format!("{:?}", declared),
             received: format!("{:?}", actual),
             context: {
@@ -1083,46 +1207,123 @@ self.rejections.push(Rejection {
                 m
             },
             repairs: vec![Repair {
-                id: _rid1,
-                action: "add_capability".into(),
-                with: None,
-                cost: 3,
+                id: rid,
+                action: "widen_effect_row".into(),
+                // The driver locates the fn node and sets/inserts this clause.
+                with: Some(effect_row_to_sexpr(&widened)),
+                cost: 2,
                 preserves_effects: true,
                 preserves_contracts: true,
                 propagates: vec![],
                 note: format!(
-                    "Add the missing capability/ies to the function's effect row: {}",
+                    "Widen the function's effect row to declare: {}",
                     missing.join(", ")
                 ),
             }],
         });
     }
 
+    /// Least-privilege: the row declares a capability the body never uses.
+    /// Narrow it to exactly the used effects (an empty row removes the clause).
+    fn reject_effect_over_declared(&mut self, declared: &EffectRow, used: &EffectRow) {
+        let extra: Vec<String> = declared
+            .caps
+            .iter()
+            .filter(|c| !used.caps.contains(c))
+            .cloned()
+            .collect();
+        let rid = self.next_repair_id();
+        self.rejections.push(Rejection {
+            gate: Gate::Effect,
+            kind: "EFFECT_OVER_DECLARED".into(),
+            node: self.fn_id,
+            path: "fn effect row".into(),
+            expected: format!("{:?}", used),
+            received: format!("{:?}", declared),
+            context: {
+                let mut m = HashMap::new();
+                m.insert("unused_caps".into(), extra.join(", "));
+                m
+            },
+            repairs: vec![Repair {
+                id: rid,
+                action: "drop_unused_effect".into(),
+                with: Some(effect_row_to_sexpr(used)),
+                cost: 2,
+                preserves_effects: true,
+                preserves_contracts: true,
+                propagates: vec![],
+                note: format!(
+                    "Narrow the effect row to least privilege; drop unused: {}",
+                    extra.join(", ")
+                ),
+            }],
+        });
+    }
+
+    /// A declared capability outside the vocabulary. Drop the unknown caps,
+    /// keeping the known remainder.
+    fn reject_unknown_capability(&mut self, declared: &EffectRow, unknown: &[String]) {
+        let kept = EffectRow {
+            pure: false,
+            caps: declared
+                .caps
+                .iter()
+                .filter(|c| is_known_capability(c))
+                .cloned()
+                .collect(),
+        };
+        let rid = self.next_repair_id();
+        self.rejections.push(Rejection {
+            gate: Gate::Effect,
+            kind: "UNKNOWN_CAPABILITY".into(),
+            node: self.fn_id,
+            path: "fn effect row".into(),
+            expected: format!("one of: {}", KNOWN_CAPABILITIES.join(", ")),
+            received: unknown.join(", "),
+            context: HashMap::new(),
+            repairs: vec![Repair {
+                id: rid,
+                action: "drop_unused_effect".into(),
+                with: Some(effect_row_to_sexpr(&kept)),
+                cost: 3,
+                preserves_effects: true,
+                preserves_contracts: true,
+                propagates: vec![],
+                note: format!("Remove unrecognized capability/ies: {}", unknown.join(", ")),
+            }],
+        });
+    }
+
     fn reject_call_effects_exceed_declared(
         &mut self,
-        id: NodeId,
+        _id: NodeId,
         callee: &str,
         declared: &EffectRow,
         actual: &EffectRow,
     ) {
-                let _rid2 = self.next_repair_id();
-self.rejections.push(Rejection {
+        let widened = declared.union_with(actual);
+        let rid = self.next_repair_id();
+        self.rejections.push(Rejection {
             gate: Gate::Effect,
             kind: "CALL_EFFECT_EXCEEDS_DECLARED".into(),
-            node: id,
+            node: self.fn_id,
             path: format!("call `{}`", callee),
             expected: format!("{:?}", declared),
             received: format!("{:?}", actual),
             context: HashMap::new(),
             repairs: vec![Repair {
-                id: _rid2,
-                action: "add_capability".into(),
-                with: None,
-                cost: 3,
+                id: rid,
+                action: "widen_effect_row".into(),
+                with: Some(effect_row_to_sexpr(&widened)),
+                cost: 2,
                 preserves_effects: true,
                 preserves_contracts: true,
                 propagates: vec![],
-                note: "Add the callee's capabilities to this function's effect row.".into(),
+                note: format!(
+                    "Widen this function's effect row to cover the effects of `{}`.",
+                    callee
+                ),
             }],
         });
     }
@@ -1183,6 +1384,19 @@ self.rejections.push(Rejection {
             kind: "INDEX_NON_VEC".into(),
             node: id,
             path: "idx".into(),
+            expected: "(vec T)".into(),
+            received: format!("{:?}", ty),
+            context: HashMap::new(),
+            repairs: vec![],
+        });
+    }
+
+    fn reject_push_non_vec(&mut self, id: NodeId, ty: &Type) {
+        self.rejections.push(Rejection {
+            gate: Gate::Type,
+            kind: "PUSH_NON_VEC".into(),
+            node: id,
+            path: "vec-push".into(),
             expected: "(vec T)".into(),
             received: format!("{:?}", ty),
             context: HashMap::new(),

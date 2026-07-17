@@ -360,6 +360,7 @@ fn expr_mentions(e: &Expr, name: &str) -> bool {
         Expr::Copy { value, .. } => expr_mentions(value, name),
         Expr::VecNew { elems, .. } => elems.iter().any(|e| expr_mentions(e, name)),
         Expr::Index { target, index, .. } => expr_mentions(target, name) || expr_mentions(index, name),
+        Expr::VecPush { target, value, .. } => expr_mentions(target, name) || expr_mentions(value, name),
         Expr::Len { target, .. } => expr_mentions(target, name),
         Expr::StructNew { fields, .. } => fields.iter().any(|(_, v)| expr_mentions(v, name)),
         Expr::Field { target, .. } => expr_mentions(target, name),
@@ -402,6 +403,9 @@ fn body_references_user_fn(e: &Expr, fns: &std::collections::HashSet<String>) ->
         Expr::VecNew { elems, .. } => elems.iter().any(|e| body_references_user_fn(e, fns)),
         Expr::Index { target, index, .. } => {
             body_references_user_fn(target, fns) || body_references_user_fn(index, fns)
+        }
+        Expr::VecPush { target, value, .. } => {
+            body_references_user_fn(target, fns) || body_references_user_fn(value, fns)
         }
         Expr::Len { target, .. } => body_references_user_fn(target, fns),
         Expr::StructNew { fields, .. } => fields.iter().any(|(_, v)| body_references_user_fn(v, fns)),

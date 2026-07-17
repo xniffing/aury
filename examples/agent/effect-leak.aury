@@ -1,0 +1,13 @@
+; Effect-gate convergence case for the evaluation corpus (Track A).
+;
+; `seeded-add` draws from `rng.next` but does NOT declare `(effects rng)`, so
+; the effect gate rejects it with EFFECT_EXCEEDS_DECLARED. In v0.1 that repair
+; carried no `with` clause and the loop could only diagnose it; the v0.2 loop
+; mechanically widens the function's effect row to `(effects rng)` and re-checks.
+;
+; The rng draw is multiplied by zero so the result is `a` regardless of the
+; seed — the effect is genuinely exercised (the gate fires) while the oracle
+; stays deterministic and checkable.
+(module effectleak
+  (fn seeded-add (params (a i64)) (ret i64)
+    (body (call i64.add (ref a) (call i64.mul (call rng.next) (lit 0))))))

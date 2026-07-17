@@ -342,6 +342,17 @@ impl Interp {
                     _ => Err(InterpError("len: not a vec".into())),
                 }
             }
+            Expr::VecPush { target, value, .. } => {
+                let t = value_or_return!(self, target, scope);
+                let v = value_or_return!(self, value, scope);
+                match t {
+                    Value::Vec(mut vs) => {
+                        vs.push(v);
+                        Ok(Flow::Value(Value::Vec(vs)))
+                    }
+                    _ => Err(InterpError("vec-push: not a vec".into())),
+                }
+            }
             Expr::StructNew { name, fields, .. } => {
                 // Evaluate source expressions left-to-right, then normalize the
                 // immutable value to declared-field order (the native slot ABI).
