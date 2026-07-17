@@ -144,4 +144,77 @@
   (fn f-make-point (params (a f64) (b f64)) (ret (struct FPoint))
     (body (new-struct FPoint (x (ref a)) (y (ref b)))))
   (struct FPoint (x f64) (y f64))
+  ; --- v0.2 Track B: growable vecs via vec-push (loop-carried accumulator) ---
+  ; build [0*0, 1*1, ...) up to n by appending in a mutable loop
+  (fn vp-build (params (n i64)) (ret (vec i64))
+    (body
+      (let acc (vec i64) (vec-new (vec i64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (ref n))
+                (break (ref acc))
+                (block
+                  (set acc (vec-push (ref acc) (call i64.mul (ref i) (ref i))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; map: double every element into a fresh vec
+  (fn vp-map-double (params (xs (vec i64))) (ret (vec i64))
+    (body
+      (let out (vec i64) (vec-new (vec i64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref out))
+                (block
+                  (set out (vec-push (ref out) (call i64.mul (idx (ref xs) (ref i)) (lit 2))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; filter: keep even elements
+  (fn vp-filter-even (params (xs (vec i64))) (ret (vec i64))
+    (body
+      (let out (vec i64) (vec-new (vec i64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref out))
+                (block
+                  (if (call i64.eq (call i64.mod (idx (ref xs) (ref i)) (lit 2)) (lit 0))
+                      (set out (vec-push (ref out) (idx (ref xs) (ref i))))
+                      unit)
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; reduce: sum via idx/len (borrows the built vec)
+  (fn vp-reduce-sum (params (xs (vec i64))) (ret i64)
+    (body
+      (let acc i64 0
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref acc))
+                (block
+                  (set acc (call i64.add (ref acc) (idx (ref xs) (ref i))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; round-trip: build then reduce
+  (fn vp-build-sum (params (n i64)) (ret i64)
+    (body (call vp-reduce-sum (vp-build (ref n)))))
+  ; f64 growable vec: scale every element by 1.5 into a fresh vec
+  (fn vp-fscale (params (xs (vec f64))) (ret (vec f64))
+    (body
+      (let out (vec f64) (vec-new (vec f64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref out))
+                (block
+                  (set out (vec-push (ref out) (call f64.mul (idx (ref xs) (ref i)) 1.5)))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; use-after-move repaired by inserting copy: push twice off one source
+  (fn vp-copy-branch (params (n i64)) (ret i64)
+    (body
+      (let base (vec i64) (vp-build (ref n))
+        (let a (vec i64) (vec-push (copy base) (lit 100))
+          (let b (vec i64) (vec-push (copy base) (lit 200))
+            (call i64.add (len (ref a)) (len (ref b))))))))
 )

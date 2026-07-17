@@ -732,14 +732,15 @@ range (contracts, mutable loops, `f64`):
 | parse-classify | ✓ | ✓ | 0 | 2/2 |
 | dice-effect | ✓ | ✓ | 0 | — |
 | effect-leak | type✗ | ✓ | 1 | 2/2 |
+| vec-pipeline | ✓ | ✓ | 0 | 2/2 |
 | calculator | ✓ | ✓ | 0 | 3/3 |
 | unterminated | parse✗ | ✓ | 1 | 1/1 |
 | false-property | intent✗ | ø (rejected) | 0 | — |
 
-**9/9 outcomes as expected** · 7 first-shot-valid · 2 rescued by repair (a
+**10/10 outcomes as expected** · 8 first-shot-valid · 2 rescued by repair (a
 paren-deficit program the parse-repair closes, and an under-declared effect row
 the loop mechanically widens) · 1 deliberately-wrong spec correctly rejected by
-the intent gate · 13/13 oracle checks. Regenerate the table and a CSV with
+the intent gate · 15/15 oracle checks. Regenerate the table and a CSV with
 `aury eval eval/corpus.json --md eval/report.md --csv eval/report.csv`.
 
 The corpus is intentionally small and its programs are curated (so most pass

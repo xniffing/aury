@@ -47,6 +47,20 @@ int64_t *aury_vec_slot(aury_vec_t *value, int64_t index) {
     return value->slots + index;
 }
 
+// Value-semantics append: returns a fresh vector of length len+1 with `elem`
+// (already coerced to i64 slot bits by the caller) at the end. The interpreter
+// clones on push, so a growable vec never mutates its source in place — this
+// keeps native observably identical.
+aury_vec_t *aury_vec_push(aury_vec_t *src, int64_t elem) {
+    int64_t n = src ? src->len : 0;
+    aury_vec_t *out = aury_vec_new(n + 1);
+    for (int64_t i = 0; i < n; i++) {
+        out->slots[i] = src->slots[i];
+    }
+    out->slots[n] = elem;
+    return out;
+}
+
 static uint64_t rng_seed;
 static uint64_t rng_step;
 

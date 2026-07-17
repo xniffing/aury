@@ -283,6 +283,52 @@ fn repair_loop_inserts_copy_for_use_after_move() {
 }
 
 #[test]
+fn property_test_drives_vec_push_over_generated_vecs() {
+    // The intent gate generates `(vec i64)` inputs (existing generator) and runs
+    // them through a vec-push map: doubling then summing equals twice the sum.
+    // Confirms growable vecs are exercised by property testing with no new
+    // generator/shrinker work.
+    let src = r#"
+(module m
+  (spec
+    (property double-sum-is-twice
+      (forall ((xs (vec i64)))
+        (call i64.eq
+          (call vp-reduce-sum (vp-map-double (ref xs)))
+          (call i64.mul (call vp-reduce-sum (ref xs)) (lit 2))))))
+  (fn vp-map-double (params (xs (vec i64))) (ret (vec i64))
+    (body
+      (let out (vec i64) (vec-new (vec i64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref out))
+                (block
+                  (set out (vec-push (ref out) (call i64.mul (idx (ref xs) (ref i)) (lit 2))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  (fn vp-reduce-sum (params (xs (vec i64))) (ret i64)
+    (body
+      (let acc i64 0
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref acc))
+                (block
+                  (set acc (call i64.add (ref acc) (idx (ref xs) (ref i))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit))))))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted(), "{:?}", check_module(&m));
+    let failures = aury::spec::run_property_tests(&m, 12345, 128);
+    assert!(
+        failures.is_empty(),
+        "property should hold; got {} counterexample(s)",
+        failures.len()
+    );
+}
+
+#[test]
 fn property_test_catches_bug_and_shrinks() {
     // bad-max returns the smaller; the property max >= a is falsified and
     // shrunk to a minimal counterexample.
@@ -615,6 +661,18 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         ("f-mean", vec!["[0.5,-0.5]".into()]),
         ("f-point-x", vec![r#"{"x":1.25,"y":-9.5}"#.into()]),
         ("f-make-point", vec!["1.25".into(), "-9.5".into()]),
+        // Track B: growable vecs (vec-push) — build/map/filter/reduce over i64
+        // and f64 must be byte-identical across interp and native.
+        ("vp-build", vec!["5".into()]),
+        ("vp-build", vec!["0".into()]),
+        ("vp-map-double", vec!["[1,2,3,-4]".into()]),
+        ("vp-filter-even", vec!["[1,2,3,4,5,6]".into()]),
+        ("vp-filter-even", vec!["[1,3,5]".into()]),
+        ("vp-reduce-sum", vec!["[10,20,30]".into()]),
+        ("vp-build-sum", vec!["6".into()]),
+        ("vp-fscale", vec!["[1.0,2.0,-0.5]".into()]),
+        ("vp-fscale", vec!["[]".into()]),
+        ("vp-copy-branch", vec!["3".into()]),
     ];
     let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
     for (index, (entry, args)) in cases.into_iter().enumerate() {

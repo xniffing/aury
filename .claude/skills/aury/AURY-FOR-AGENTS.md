@@ -132,6 +132,7 @@ never meaningfully exercised is flagged as **vacuous**.
 | `region` | `{"kind":"region","name":"r","body":<e>}` | open an allocation/effect region |
 | `copy` | `{"kind":"copy","value":<e>}` | explicit copy of a value |
 | `vec-new` | `{"kind":"vec-new","type":"(vec i64)","elems":[<e>,...]}` | build a vector |
+| `vec-push` | `{"kind":"vec-push","target":<e>,"value":<e>}` | append → grown vector; **consumes** a bare `(ref v)` target (moves it) |
 | `idx` | `{"kind":"idx","target":<e>,"index":<e>}` | vector element (bounds-checked) |
 | `len` | `{"kind":"len","target":<e>}` | vector length → i64 |
 | `new-struct` | `{"kind":"new-struct","name":"Vec2","fields":[{"name":"x","value":<e>}]}` | construct |
@@ -179,6 +180,28 @@ Rules the validator enforces (each is a rejection with a repair menu):
 
 A `set` inside a `match`/`if` arm mutates the enclosing binding (arms are not
 isolated scopes). Semantics are identical on the interpreter and native backend.
+
+### Growable vectors (`vec-push`) and affine moves
+
+`vec-push` appends and returns the grown vector; it does **not** mutate in
+place. It **consumes** (moves) a bare `(ref v)` target, so the idiom is to
+rebind in a loop: `set acc = (vec-push acc x)`. `set` revives the binding, so
+the accumulator pattern type-checks and builds a vector element by element:
+
+```json
+{"kind":"set","name":"acc",
+ "value":{"kind":"vec-push",
+   "target":{"kind":"ref","name":"acc"},
+   "value":{"kind":"ref","name":"i"}}}
+```
+
+- Using a moved vector again is `USE_AFTER_MOVE`. The repair inserts `(copy v)`,
+  which yields a fresh independent value — apply it, or restructure so each vector
+  is owned once. `idx`, `len`, and `copy` **borrow** (they do not consume), so
+  reading a vector any number of times is fine.
+- Native lowering matches the interpreter (a push allocates a fresh len+1 vector),
+  so `build`/`map`/`filter`/`reduce` pipelines are byte-identical across interp,
+  native, and wasm — including `(vec f64)`. See `examples/agent/vec-pipeline.aury`.
 
 ---
 

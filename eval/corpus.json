@@ -52,6 +52,15 @@
       ]
     },
     {
+      "name": "vec-pipeline",
+      "intent": "map/filter/reduce over a growable (vec f64) via vec-push (Track B): scale, keep-above, sum.",
+      "program": "../examples/agent/vec-pipeline.aury",
+      "checks": [
+        { "fn": "pipeline", "args": ["[1.0,2.0,3.0,4.0]", "2.0", "3.0"], "expect": "1.8000000000000000e+01" },
+        { "fn": "total", "args": ["[]"], "expect": "0.0000000000000000e+00" }
+      ]
+    },
+    {
       "name": "calculator",
       "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
       "program": "../projects/calculator/calculator.json",
