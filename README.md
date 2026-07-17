@@ -795,19 +795,25 @@ region, so sharing a region with any other reference is a pointwise
 also enforced (`vec-push` consumes its target; a later use is `USE_AFTER_MOVE`,
 repaired by inserting a copy).
 
-Regions are a **real arena** when the native backend can prove them escape-free —
-no `set`/`return`/`break` in the body, so nothing leaks to an outer binding or
-jumps past the region's exit. Every allocation made inside is then bulk-freed at
-region exit, and the region's **result is deep-copied (relocated) into the parent
-frame first**, so even an *aggregate* result (a vector or struct) survives while
-its scratch is reclaimed. This is verified by allocation accounting and is
-observably transparent: the interpreter, native, and wasm backends produce
-identical values (the interpreter needs no change, since Rust owns its memory).
-Regions that could let a value escape via `set`, `return`, or `break`
-conservatively fall back to process-lifetime allocation. Unconditional freeing
-across those escape paths — exit-path cleanup for early `return`/`break` and a
-static `REGION_ESCAPE` rejection for `set`-escape — is the remaining step; `copy`
-is still an immutable-value pass-through.
+Regions are a **real arena**: an escape analysis (`region_escapes`) decides when a
+region's frame can be freed at exit. Every allocation made inside an arena-managed
+region is bulk-freed at region exit, and the region's **result is deep-copied
+(relocated) into the parent frame first**, so even an *aggregate* result (a vector
+or struct) survives while its scratch is reclaimed. On an early `return` out of the
+region, the return path unwinds the region the same way. The analysis is precise
+about what actually escapes: a `set` of an in-region binding and a `break` to a
+loop *inside* the region do **not** escape, so a loop/accumulator region — build a
+vector with `set` + `vec-push`, then `break` or `return` it out — is fully
+arena-managed and every intermediate vector is freed. This is verified by
+allocation accounting and is observably transparent: the interpreter, native, and
+wasm backends produce identical values (the interpreter needs no change, since
+Rust owns its memory).
+
+The remaining genuine escapes — a `set` of a binding declared *outside* the
+region, a `break` out of the region, or a nested region — conservatively fall back
+to process-lifetime allocation (sound, just not freed). A static `REGION_ESCAPE`
+rejection for the `set`-escape case, and `copy` as a real deep-copy rather than a
+pass-through, are the remaining steps.
 
 ### Contracts and proof
 

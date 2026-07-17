@@ -31,6 +31,15 @@ pub struct Lowerer {
     scope: Vec<(String, String, Type)>, // name, slot, Aury type
     retslot: String,
     retty: String,
+    /// The function's Aury return type and its value descriptor, so a `return`
+    /// inside an arena-managed region can relocate the returned value out before
+    /// the region's frame is freed.
+    ret_ty: Type,
+    ret_descriptor: String,
+    /// Count of arena-managed regions currently open on the lowering stack. A
+    /// `return` inside them must unwind (relocate + free) each before jumping to
+    /// the exit block. Arena regions never nest, so this is 0 or 1.
+    active_arena_regions: usize,
     errors: Vec<String>,
     str_literals: Vec<(String, String, String)>, // data name, boxed name, value
     /// Buffered region result descriptors: (global name, descriptor bytes),
@@ -191,6 +200,9 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
         scope: Vec::new(),
         retslot: String::new(),
         retty: String::new(),
+        ret_ty: Type::Unit,
+        ret_descriptor: String::new(),
+        active_arena_regions: 0,
         errors: Vec::new(),
         str_literals: Vec::new(),
         desc_literals: Vec::new(),
@@ -509,6 +521,8 @@ impl Lowerer {
         let retslot = format!("%.ret.{}", f.name);
         self.retslot = retslot.clone();
         self.retty = retty.clone();
+        self.ret_ty = f.ret.clone();
+        self.ret_descriptor = self.type_descriptor_self(&f.ret).unwrap_or_default();
         self.out_str(&format!("  {} = alloca {}\n", retslot, retty));
         let n_before = self.scope.len();
         for (i, p) in f.params.iter().enumerate() {
@@ -536,6 +550,8 @@ impl Lowerer {
         self.scope.truncate(n_before);
         self.retslot.clear();
         self.retty.clear();
+        self.ret_descriptor.clear();
+        self.ret_ty = Type::Unit;
     }
 
     /// Lower an expression. Returns (value, llvm_type, diverged).
@@ -581,7 +597,28 @@ impl Lowerer {
                 if div {
                     return (None, String::new(), true);
                 }
-                self.out_str(&format!("  store {} {}, ptr {}\n", vty, v.unwrap(), self.retslot));
+                let mut val = v.unwrap();
+                let mut val_ty = vty;
+                // Relocate the returned value out of every arena region it is
+                // leaving, freeing each region's frame before the jump. Arena
+                // regions do not nest, so this runs at most once.
+                if self.active_arena_regions > 0 && !self.ret_descriptor.is_empty() {
+                    let descriptor = self.ret_descriptor.clone();
+                    for _ in 0..self.active_arena_regions {
+                        let bits = self.value_to_bits(val, &val_ty);
+                        let desc_name = self.descriptor_global(&descriptor);
+                        let relocated = self.fresh();
+                        self.out_str(&format!(
+                            "  {} = call i64 @aury_region_exit_keep(i64 {}, ptr {})\n",
+                            relocated, bits, desc_name
+                        ));
+                        let ret_ty = self.ret_ty.clone();
+                        let (nv, nty) = self.bits_to_value(relocated, &ret_ty);
+                        val = nv;
+                        val_ty = nty;
+                    }
+                }
+                self.out_str(&format!("  store {} {}, ptr {}\n", val_ty, val, self.retslot));
                 self.out_str("  br label %exit\n");
                 (None, String::new(), true)
             }
@@ -610,7 +647,11 @@ impl Lowerer {
                 } else {
                     let desc_name = self.descriptor_global(&descriptor.unwrap());
                     self.out_str("  call void @aury_region_enter()\n");
+                    // A `return` inside the body unwinds this region on its way
+                    // out (see the Return arm); track that it is open.
+                    self.active_arena_regions += 1;
                     let (value, ty, diverged) = self.lower_expr(body);
+                    self.active_arena_regions -= 1;
                     if diverged {
                         return (value, ty, diverged);
                     }
@@ -1585,44 +1626,81 @@ impl Lowerer {
             .unwrap_or(Type::Unit)
     }
 
-    /// True if evaluating `e` could leave its enclosing region other than
-    /// through the normal tail (a `set` may publish an in-region allocation to
-    /// an outer binding; a `return`/`break` jumps past the region's exit). Used
-    /// to decide whether a region is safe to arena-manage (conservative: any
-    /// such node anywhere in the body disables freeing).
-    fn region_escapes(e: &Expr) -> bool {
-        match e {
-            Expr::Set { .. } | Expr::Return { .. } | Expr::Break { .. } => true,
-            Expr::Lit { .. } | Expr::Ref { .. } => false,
-            Expr::Call { args, .. } => args.iter().any(Self::region_escapes),
-            Expr::If { cond, then, els, .. } => {
-                Self::region_escapes(cond)
-                    || Self::region_escapes(then)
-                    || Self::region_escapes(els)
-            }
-            Expr::Match { scrut, arms, .. } => {
-                Self::region_escapes(scrut) || arms.iter().any(|a| Self::region_escapes(&a.body))
-            }
-            Expr::Let { init, body, .. } => {
-                Self::region_escapes(init) || Self::region_escapes(body)
-            }
-            Expr::Loop { body, .. } | Expr::Region { body, .. } => Self::region_escapes(body),
-            Expr::Block { stmts, tail, .. } => {
-                stmts.iter().any(Self::region_escapes) || Self::region_escapes(tail)
-            }
-            Expr::Copy { value, .. } | Expr::Cast { value, .. } => Self::region_escapes(value),
-            Expr::VecNew { elems, .. } => elems.iter().any(Self::region_escapes),
-            Expr::VecPush { target, value, .. } => {
-                Self::region_escapes(target) || Self::region_escapes(value)
-            }
-            Expr::Index { target, index, .. } => {
-                Self::region_escapes(target) || Self::region_escapes(index)
-            }
-            Expr::Len { target, .. } | Expr::Field { target, .. } => Self::region_escapes(target),
-            Expr::StructNew { fields, .. } => {
-                fields.iter().any(|(_, v)| Self::region_escapes(v))
+    /// True if evaluating a region body could let a value escape the region
+    /// other than through its relocated result — in which case the region is not
+    /// safe to arena-manage and stays a pass-through. Escapes are:
+    ///   * a `return` (leaves the whole function, past the region's exit);
+    ///   * a `break` to a loop *outside* the region (`depth == 0`);
+    ///   * a `set` of a binding declared *outside* the region (publishes an
+    ///     in-region allocation to memory that outlives the region);
+    ///   * a nested `region` (its own arena / pass-through interacts with this
+    ///     frame — handled conservatively).
+    /// A `set` of an in-region binding and a `break` to an in-region loop do NOT
+    /// escape, so loop/accumulator regions (build a vector with `set`+`vec-push`,
+    /// then `break` it out) are still arena-managed and their scratch is freed.
+    fn region_escapes(body: &Expr) -> bool {
+        // `inner` is the set of bindings introduced inside the region (properly
+        // scoped); `depth` counts loops opened inside the region.
+        fn walk(e: &Expr, inner: &mut Vec<String>, depth: usize) -> bool {
+            match e {
+                // A `return` leaves past the region exit, but the return path
+                // unwinds the region (relocate + free) in lowering, so it is not
+                // a hard escape — only its value is checked.
+                Expr::Return { value, .. } => walk(value, inner, depth),
+                Expr::Break { value, .. } => depth == 0 || walk(value, inner, depth),
+                Expr::Set { name, value, .. } => {
+                    !inner.iter().any(|n| n == name) || walk(value, inner, depth)
+                }
+                Expr::Region { .. } => true, // nested region: conservative
+                Expr::Lit { .. } | Expr::Ref { .. } => false,
+                Expr::Call { args, .. } => args.iter().any(|a| walk(a, inner, depth)),
+                Expr::If { cond, then, els, .. } => {
+                    walk(cond, inner, depth) || walk(then, inner, depth) || walk(els, inner, depth)
+                }
+                Expr::Match { scrut, arms, .. } => {
+                    if walk(scrut, inner, depth) {
+                        return true;
+                    }
+                    arms.iter().any(|a| {
+                        let bound = matches!(&a.pattern, Pattern::Bind(_));
+                        if let Pattern::Bind(name) = &a.pattern {
+                            inner.push(name.clone());
+                        }
+                        let escaped = walk(&a.body, inner, depth);
+                        if bound {
+                            inner.pop();
+                        }
+                        escaped
+                    })
+                }
+                Expr::Let { name, init, body, .. } => {
+                    if walk(init, inner, depth) {
+                        return true;
+                    }
+                    inner.push(name.clone());
+                    let escaped = walk(body, inner, depth);
+                    inner.pop();
+                    escaped
+                }
+                Expr::Loop { body, .. } => walk(body, inner, depth + 1),
+                Expr::Block { stmts, tail, .. } => {
+                    stmts.iter().any(|s| walk(s, inner, depth)) || walk(tail, inner, depth)
+                }
+                Expr::Copy { value, .. } | Expr::Cast { value, .. } => walk(value, inner, depth),
+                Expr::VecNew { elems, .. } => elems.iter().any(|e| walk(e, inner, depth)),
+                Expr::VecPush { target, value, .. } => {
+                    walk(target, inner, depth) || walk(value, inner, depth)
+                }
+                Expr::Index { target, index, .. } => {
+                    walk(target, inner, depth) || walk(index, inner, depth)
+                }
+                Expr::Len { target, .. } | Expr::Field { target, .. } => walk(target, inner, depth),
+                Expr::StructNew { fields, .. } => {
+                    fields.iter().any(|(_, v)| walk(v, inner, depth))
+                }
             }
         }
+        walk(body, &mut Vec::new(), 0)
     }
 
     /// Match the validator's divergence rule when choosing a control-flow
