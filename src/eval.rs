@@ -63,6 +63,10 @@ pub struct TaskReport {
     pub parsed_first_shot: bool,
     /// First-shot: type/effect/region checks passed with no repairs.
     pub validated_first_shot: bool,
+    /// The earliest gate that rejected the first-shot program: one of `parse`,
+    /// `type`, `effect`, `region`, `contract`, `intent`, or `""` (fully valid
+    /// first-shot). Drives the per-gate convergence breakdown.
+    pub first_shot_gate: String,
     /// First-shot: properties + contracts passed (only meaningful if validated).
     pub intent_first_shot: bool,
     /// Post-repair: the closed loop reached an accepted state.
@@ -178,6 +182,7 @@ pub fn run_task(task: &Task, seed: u64) -> TaskReport {
         intent: task.intent.clone(),
         parsed_first_shot: false,
         validated_first_shot: false,
+        first_shot_gate: String::new(),
         intent_first_shot: false,
         accepted: false,
         patches: 0,
@@ -199,17 +204,28 @@ pub fn run_task(task: &Task, seed: u64) -> TaskReport {
         }
     };
 
-    // First-shot: no repairs at all.
-    if let Ok(module) = build_source(&source) {
-        report.parsed_first_shot = true;
-        match check_module(&module) {
-            ValidationOutcome::Accepted => {
-                report.validated_first_shot = true;
-                let props = run_property_tests(&module, seed, TEST_CASES);
-                let contracts = run_contract_tests(&module, seed, TEST_CASES);
-                report.intent_first_shot = props.is_empty() && contracts.is_empty();
+    // First-shot: no repairs at all. Record the *earliest* gate that rejects it.
+    match build_source(&source) {
+        Err(_) => report.first_shot_gate = "parse".into(),
+        Ok(module) => {
+            report.parsed_first_shot = true;
+            match check_module(&module) {
+                ValidationOutcome::Accepted => {
+                    report.validated_first_shot = true;
+                    let props = run_property_tests(&module, seed, TEST_CASES);
+                    let contracts = run_contract_tests(&module, seed, TEST_CASES);
+                    report.intent_first_shot = props.is_empty() && contracts.is_empty();
+                    if !report.intent_first_shot {
+                        report.first_shot_gate = "intent".into();
+                    }
+                }
+                ValidationOutcome::Rejected(rejs) => {
+                    report.first_shot_gate = rejs
+                        .first()
+                        .map(|r| r.gate.as_str().to_string())
+                        .unwrap_or_default();
+                }
             }
-            ValidationOutcome::Rejected(_) => {}
         }
     }
 
@@ -378,14 +394,12 @@ impl CorpusReport {
         out.push_str("| Task | First-shot | Loop | Patches | Oracle | Notes |\n");
         out.push_str("|------|:----------:|:----:|:-------:|:------:|-------|\n");
         for t in &self.tasks {
-            let first = if !t.parsed_first_shot {
-                "parse✗"
-            } else if !t.validated_first_shot {
-                "type✗"
-            } else if !t.intent_first_shot {
-                "intent✗"
+            // Precise gate label (parse✗ / type✗ / effect✗ / region✗ / intent✗),
+            // matching the per-gate breakdown below.
+            let first = if t.first_shot_gate.is_empty() {
+                "✓".to_string()
             } else {
-                "✓"
+                format!("{}✗", t.first_shot_gate)
             };
             let loop_col = if !t.expect_accept {
                 if t.accepted {
@@ -420,21 +434,48 @@ impl CorpusReport {
             self.tasks.iter().map(|t| t.checks_passed).sum::<usize>(),
             self.tasks.iter().map(|t| t.checks_total).sum::<usize>(),
         ));
+        // Per-gate breakdown: which gate first rejected each program, and whether
+        // the closed loop mechanically converged it. This is the v0.2 headline —
+        // the loop now converges structural gates (effect, region), not just
+        // parse — so it is reported explicitly.
+        out.push_str(
+            "\n### First-shot failures by gate\n\n\
+             **Converged** = the loop mechanically repaired the program to \
+             acceptance; **rejected✓** = a deliberately-wrong spec the loop \
+             correctly refused (true negative).\n\n\
+             | Gate | first-shot fails | converged | rejected✓ |\n\
+             |------|:----------------:|:---------:|:---------:|\n",
+        );
+        for gate in ["parse", "type", "effect", "region", "contract", "intent"] {
+            let fails = self.count(|t| t.first_shot_gate == gate);
+            if fails == 0 {
+                continue;
+            }
+            let converged =
+                self.count(|t| t.first_shot_gate == gate && t.accepted && t.expect_accept && t.patches > 0);
+            let rejected_ok =
+                self.count(|t| t.first_shot_gate == gate && !t.expect_accept && !t.accepted);
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                gate, fails, converged, rejected_ok
+            ));
+        }
         out
     }
 
     /// Same data as CSV for downstream analysis.
     pub fn to_csv(&self) -> String {
         let mut out = String::from(
-            "task,parsed_first_shot,validated_first_shot,intent_first_shot,accepted,patches,\
-             expect_accept,outcome_as_expected,checks_passed,checks_total\n",
+            "task,parsed_first_shot,validated_first_shot,first_shot_gate,intent_first_shot,\
+             accepted,patches,expect_accept,outcome_as_expected,checks_passed,checks_total\n",
         );
         for t in &self.tasks {
             out.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
                 t.name,
                 t.parsed_first_shot,
                 t.validated_first_shot,
+                if t.first_shot_gate.is_empty() { "-" } else { &t.first_shot_gate },
                 t.intent_first_shot,
                 t.accepted,
                 t.patches,

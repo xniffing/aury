@@ -61,6 +61,23 @@
       ]
     },
     {
+      "name": "alias-region",
+      "intent": "Two mut references share a region (may alias); the loop should split the region and accept.",
+      "program": "../examples/agent/alias-region.aury",
+      "checks": [
+        { "fn": "double", "args": ["21"], "expect": "42" }
+      ]
+    },
+    {
+      "name": "vec-use-after-move",
+      "intent": "A vector is pushed then reused (use-after-move); the loop should insert a copy and accept.",
+      "program": "../examples/agent/vec-use-after-move.aury",
+      "checks": [
+        { "fn": "twice", "args": ["5"], "expect": "6" },
+        { "fn": "twice", "args": ["0"], "expect": "6" }
+      ]
+    },
+    {
       "name": "calculator",
       "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
       "program": "../projects/calculator/calculator.json",

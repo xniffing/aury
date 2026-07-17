@@ -23,7 +23,7 @@ pub enum Gate {
 }
 
 impl Gate {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Gate::Type => "type",
             Gate::Effect => "effect",

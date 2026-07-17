@@ -1453,6 +1453,20 @@ fn evaluation_corpus_converges_as_expected() {
         .count();
     assert!(true_negatives >= 1, "expected the intent gate to reject a wrong spec");
 
+    // v0.2 headline: the loop now mechanically converges *structural* gates, not
+    // just parse. Assert at least one converged task per structural gate the
+    // corpus exercises (effect, region), plus the parse case.
+    let converged_at = |gate: &str| {
+        report
+            .tasks
+            .iter()
+            .filter(|t| t.first_shot_gate == gate && t.accepted && t.expect_accept && t.patches > 0)
+            .count()
+    };
+    assert!(converged_at("parse") >= 1, "parse-gate convergence expected");
+    assert!(converged_at("effect") >= 1, "effect-gate convergence expected (Track A)");
+    assert!(converged_at("region") >= 1, "region-gate convergence expected (Tracks B/C)");
+
     // Determinism: a second run with the same seed is identical.
     let again = aury::eval::run_corpus(&manifest, None).expect("run corpus again");
     assert_eq!(report.summary(), again.summary(), "eval must be deterministic");

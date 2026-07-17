@@ -1,0 +1,9 @@
+; Region-gate convergence case (Track C). `combine` declares two `mut`
+; references into the same region `r`, which may alias — an ALIAS_CONFLICT. The
+; loop mechanically applies `split_region`, renaming one reference's region to a
+; fresh disjoint `r_s1`. `double` is a plain oracle-checkable helper alongside it.
+(module aliasregion
+  (fn combine (params (a (ref r mut i64)) (b (ref r mut i64))) (ret i64)
+    (body (lit 0)))
+  (fn double (params (n i64)) (ret i64)
+    (body (call i64.mul (ref n) (lit 2)))))
