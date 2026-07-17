@@ -1,0 +1,47 @@
+; v0.2 Track B: a map / filter / reduce pipeline over a growable (vec f64),
+; built with `vec-push` in loop-carried accumulators. Each stage allocates a
+; fresh vector (value-semantics push), so the affine checker sees single-owner
+; use throughout — no copies needed. Combines Track 2 loops, Track 3 floats, and
+; the Track B growable-vec surface.
+(module vecpipeline
+  ; map: scale every element by `factor` into a fresh vec
+  (fn scale (params (xs (vec f64)) (factor f64)) (ret (vec f64))
+    (body
+      (let out (vec f64) (vec-new (vec f64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref out))
+                (block
+                  (set out (vec-push (ref out) (call f64.mul (idx (ref xs) (ref i)) (ref factor))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; filter: keep elements strictly greater than `lo`
+  (fn keep-above (params (xs (vec f64)) (lo f64)) (ret (vec f64))
+    (body
+      (let out (vec f64) (vec-new (vec f64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref out))
+                (block
+                  (if (call f64.gt (idx (ref xs) (ref i)) (ref lo))
+                      (set out (vec-push (ref out) (idx (ref xs) (ref i))))
+                      unit)
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; reduce: sum the elements
+  (fn total (params (xs (vec f64))) (ret f64)
+    (body
+      (let acc f64 0.0
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref acc))
+                (block
+                  (set acc (call f64.add (ref acc) (idx (ref xs) (ref i))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; pipeline: scale by `factor`, drop everything <= `lo`, then sum
+  (fn pipeline (params (xs (vec f64)) (factor f64) (lo f64)) (ret f64)
+    (body (total (keep-above (scale (ref xs) (ref factor)) (ref lo))))))

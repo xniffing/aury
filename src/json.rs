@@ -286,6 +286,11 @@ fn typed_to_sexpr(kind: &str, obj: &serde_json::Map<String, Value>) -> Result<Se
             let target = json_to_sexpr(obj.get("target").ok_or("len.target")?)?;
             Ok(list(vec![atom("len"), target]))
         }
+        "vec-push" => {
+            let target = json_to_sexpr(obj.get("target").ok_or("vec-push.target")?)?;
+            let value = json_to_sexpr(obj.get("value").ok_or("vec-push.value")?)?;
+            Ok(list(vec![atom("vec-push"), target, value]))
+        }
         "new-struct" => {
             let name = jstr("name").ok_or("new-struct.name")?;
             let mut items = vec![atom("new-struct"), atom(name)];

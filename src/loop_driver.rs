@@ -276,6 +276,15 @@ fn apply_repair(
     }
     let mut root = xs[0].clone();
     let target = rej.node.to_string();
+    // Effect-row repairs don't replace a node — they set (or insert) the
+    // `(effects ...)` clause of the targeted `(fn ...)` form. `with` carries
+    // the full corrected clause (an empty `(effects)` means "make it pure").
+    if repair.action == "widen_effect_row" || repair.action == "drop_unused_effect" {
+        if set_effect_row_by_id(&mut root, &target, &with_template) {
+            return Ok(format!("{:?}", root));
+        }
+        return Err(format!("could not locate fn node {} to set effects", rej.node));
+    }
     if let Some(original) = find_node_by_id(&root, &target) {
         // Substitute every `?` placeholder in the repair template with the
         // original node, then replace the original with the result. For
@@ -286,6 +295,49 @@ fn apply_repair(
         }
     }
     Err(format!("could not locate node {} for patch", rej.node))
+}
+
+/// Locate the `(fn ...)` form whose id matches `target_id` and set its effect
+/// clause to `new_row`. If the fn already carries an `(effects ...)` clause it
+/// is replaced in place; otherwise the clause is inserted at the position
+/// `build_fn` expects — after `(ret ...)`/`(params ...)` and before any
+/// `requires`/`ensures`/`body`.
+fn set_effect_row_by_id(s: &mut Sexpr, target_id: &str, new_row: &Sexpr) -> bool {
+    if crate::id::sexpr_id(s).hex() == target_id {
+        if let Sexpr::List(xs) = s {
+            // An empty `(effects)` clause means "the function is pure" — drop the
+            // clause entirely rather than emitting a caps-less effect row.
+            let make_pure = matches!(new_row, Sexpr::List(inner) if inner.len() == 1);
+            if let Some(pos) = xs.iter().position(|c| c.head() == Some("effects")) {
+                if make_pure {
+                    xs.remove(pos);
+                } else {
+                    xs[pos] = new_row.clone();
+                }
+                return true;
+            }
+            if make_pure {
+                // No clause to remove and nothing to add — already pure.
+                return true;
+            }
+            // Otherwise insert before the first requires/ensures/body clause.
+            let insert_at = xs
+                .iter()
+                .position(|c| matches!(c.head(), Some("requires") | Some("ensures") | Some("body")))
+                .unwrap_or(xs.len());
+            xs.insert(insert_at, new_row.clone());
+            return true;
+        }
+        return false;
+    }
+    if let Sexpr::List(xs) = s {
+        for x in xs.iter_mut() {
+            if set_effect_row_by_id(x, target_id, new_row) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Find the first sub-s-expr whose content-addressed id matches `target_id`.

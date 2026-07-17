@@ -116,8 +116,274 @@ fn effect_checker_rejects_pure_fn_calling_effectful_op() {
     assert_eq!(rejs.len(), 1);
     assert_eq!(rejs[0].gate, Gate::Effect);
     assert_eq!(rejs[0].kind, "EFFECT_EXCEEDS_DECLARED");
-    // The repair menu proposes adding the missing capability.
-    assert!(rejs[0].repairs.iter().any(|r| r.action == "add_capability"));
+    // The repair menu proposes widening the effect row, and — unlike v0.1 — it
+    // carries a `with` clause so the driver can apply it mechanically.
+    let widen = rejs[0]
+        .repairs
+        .iter()
+        .find(|r| r.action == "widen_effect_row")
+        .expect("widen_effect_row repair");
+    assert!(widen.with.is_some(), "widen repair must carry a `with` clause");
+}
+
+#[test]
+fn repair_loop_mechanically_widens_effect_row() {
+    // Track A anchor: a function that uses an effectful op without declaring the
+    // capability is now *mechanically* repaired by the loop (v0.1 could only
+    // diagnose this — the effect repair carried no `with` and never converged).
+    let src = r#"
+(module m
+  (fn roll (params) (ret i64)
+    (body (call rng.next))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should converge on effect leak: {:?}", res.log);
+    assert!(res.patches_applied >= 1);
+    // The repaired source now declares the rng capability and validates.
+    assert!(res.source.contains("effects"), "repaired source: {}", res.source);
+    let m = module(&res.source);
+    assert!(check_module(&m).is_accepted());
+}
+
+#[test]
+fn repair_loop_narrows_over_declared_effect_row() {
+    // Least-privilege: a pure body that declares `rng` is over-declared; the
+    // loop narrows the row — here, all the way to pure (clause removed).
+    let src = r#"
+(module m
+  (fn f (params (a i64)) (ret i64) (effects rng)
+    (body (call i64.add (ref a) (lit 1)))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should narrow and accept: {:?}", res.log);
+    assert!(res.patches_applied >= 1);
+    // The unused rng effect is gone; the fn is now pure (no effects clause).
+    assert!(!res.source.contains("effects"), "repaired source: {}", res.source);
+    let m = module(&res.source);
+    assert!(check_module(&m).is_accepted());
+}
+
+#[test]
+fn repair_loop_drops_partially_unused_effect() {
+    // Declares two caps but only uses one; the row narrows to just the used cap.
+    let src = r#"
+(module m
+  (fn f (params) (ret i64) (effects rng clock)
+    (body (call rng.next))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should narrow and accept: {:?}", res.log);
+    assert!(res.source.contains("rng"), "should keep rng: {}", res.source);
+    assert!(!res.source.contains("clock"), "should drop clock: {}", res.source);
+    let m = module(&res.source);
+    assert!(check_module(&m).is_accepted());
+}
+
+#[test]
+fn effect_checker_rejects_unknown_capability() {
+    // A capability outside the vocabulary is rejected with a drop repair; the
+    // loop removes it.
+    let src = r#"
+(module m
+  (fn f (params (a i64)) (ret i64) (effects telepathy)
+    (body (ref a))))"#;
+    let m = module(src);
+    match check_module(&m) {
+        ValidationOutcome::Rejected(rejs) => {
+            assert!(rejs.iter().any(|r| r.kind == "UNKNOWN_CAPABILITY"));
+        }
+        _ => panic!("expected UNKNOWN_CAPABILITY rejection"),
+    }
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should drop unknown cap and accept: {:?}", res.log);
+    assert!(!res.source.contains("telepathy"), "repaired: {}", res.source);
+}
+
+#[test]
+fn repair_loop_widens_existing_effect_row_in_place() {
+    // A fn that already declares one capability but is missing another has its
+    // existing (effects ...) clause widened, not duplicated.
+    let src = r#"
+(module m
+  (fn f (params (a i64)) (ret i64) (effects (fs read))
+    (body (call i64.add (ref a) (call rng.next)))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should converge: {:?}", res.log);
+    // Exactly one effects clause survives (widened, not duplicated).
+    assert_eq!(res.source.matches("(effects").count(), 1, "source: {}", res.source);
+    let m = module(&res.source);
+    assert!(check_module(&m).is_accepted());
+}
+
+// ---- Track C: region aliasing ----
+
+#[test]
+fn alias_conflict_two_mut_refs_in_one_region() {
+    let src = r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref r mut i64))) (ret i64)
+    (body (lit 0))))"#;
+    let m = module(src);
+    match check_module(&m) {
+        ValidationOutcome::Rejected(rejs) => {
+            assert!(rejs.iter().any(|r| r.kind == "ALIAS_CONFLICT" && r.gate == Gate::Region), "{:?}", rejs);
+        }
+        _ => panic!("expected ALIAS_CONFLICT"),
+    }
+}
+
+#[test]
+fn alias_mut_plus_shared_conflicts() {
+    let src = r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref r ref i64))) (ret i64)
+    (body (lit 0))))"#;
+    let m = module(src);
+    assert!(matches!(check_module(&m), ValidationOutcome::Rejected(_)));
+}
+
+#[test]
+fn distinct_regions_and_shared_borrows_are_ok() {
+    // two muts in *different* regions: provably disjoint, accepted
+    let a = module(r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref s mut i64))) (ret i64)
+    (body (lit 0))))"#);
+    assert!(check_module(&a).is_accepted(), "{:?}", check_module(&a));
+    // two shared refs in one region: shared aliasing is allowed
+    let b = module(r#"
+(module m
+  (fn f (params (a (ref r ref i64)) (b (ref r ref i64))) (ret i64)
+    (body (lit 0))))"#);
+    assert!(check_module(&b).is_accepted(), "{:?}", check_module(&b));
+}
+
+#[test]
+fn repair_loop_splits_conflicting_region() {
+    // The loop mechanically renames one reference's region to a fresh disjoint
+    // one, resolving the aliasing conflict.
+    let src = r#"
+(module m
+  (fn f (params (a (ref r mut i64)) (b (ref r mut i64))) (ret i64)
+    (body (lit 0))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should split the region: {:?}", res.log);
+    assert!(res.source.contains("r_s1"), "repaired source: {}", res.source);
+    let m = module(&res.source);
+    assert!(check_module(&m).is_accepted());
+}
+
+// ---- Track B: growable aggregates + affine move-tracking ----
+
+const VEC_BUILD: &str = r#"
+(module m
+  (fn build (params (n i64)) (ret (vec i64))
+    (body
+      (let acc (vec i64) (vec-new (vec i64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (ref n))
+                (break (ref acc))
+                (block
+                  (set acc (vec-push (ref acc) (ref i)))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  (fn build-len (params (n i64)) (ret i64)
+    (body (len (build (ref n)))))
+  (fn build-at (params (n i64) (k i64)) (ret i64)
+    (body (idx (build (ref n)) (ref k)))))"#;
+
+#[test]
+fn vec_push_builds_vec_in_a_loop() {
+    // The accumulator loop pattern `(set acc (vec-push acc i))` type-checks
+    // (push moves the vec, set revives it) and computes correctly in interp.
+    let m = module(VEC_BUILD);
+    assert!(check_module(&m).is_accepted(), "{:?}", check_module(&m));
+    let mut interp = Interp::new(&m, 0);
+    // build(4) = [0,1,2,3]
+    assert_eq!(interp.call_fn("build-len", vec![i64v(4)]).unwrap(), i64v(4));
+    assert_eq!(interp.call_fn("build-at", vec![i64v(4), i64v(2)]).unwrap(), i64v(2));
+    assert_eq!(interp.call_fn("build-len", vec![i64v(0)]).unwrap(), i64v(0));
+}
+
+#[test]
+fn vec_push_move_tracking_rejects_use_after_move() {
+    // Pushing `acc` moves it; using `acc` again is USE_AFTER_MOVE.
+    let src = r#"
+(module m
+  (fn dup (params) (ret (vec i64))
+    (body
+      (let acc (vec i64) (vec-new (vec i64) (lit 1))
+        (let a (vec i64) (vec-push (ref acc) (lit 2))
+          (vec-push (ref acc) (lit 3)))))))"#;
+    let m = module(src);
+    match check_module(&m) {
+        ValidationOutcome::Rejected(rejs) => {
+            assert!(rejs.iter().any(|r| r.kind == "USE_AFTER_MOVE"), "{:?}", rejs);
+        }
+        _ => panic!("expected USE_AFTER_MOVE"),
+    }
+}
+
+#[test]
+fn repair_loop_inserts_copy_for_use_after_move() {
+    // The loop mechanically applies the `insert_copy` repair: the second use of
+    // the moved vec becomes `(copy acc)`, which revives a fresh value.
+    let src = r#"
+(module m
+  (fn dup (params) (ret (vec i64))
+    (body
+      (let acc (vec i64) (vec-new (vec i64) (lit 1))
+        (let a (vec i64) (vec-push (ref acc) (lit 2))
+          (vec-push (ref acc) (lit 3)))))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should insert copy and accept: {:?}", res.log);
+    assert!(res.source.contains("copy"), "repaired source: {}", res.source);
+    let m = module(&res.source);
+    assert!(check_module(&m).is_accepted());
+}
+
+#[test]
+fn property_test_drives_vec_push_over_generated_vecs() {
+    // The intent gate generates `(vec i64)` inputs (existing generator) and runs
+    // them through a vec-push map: doubling then summing equals twice the sum.
+    // Confirms growable vecs are exercised by property testing with no new
+    // generator/shrinker work.
+    let src = r#"
+(module m
+  (spec
+    (property double-sum-is-twice
+      (forall ((xs (vec i64)))
+        (call i64.eq
+          (call vp-reduce-sum (vp-map-double (ref xs)))
+          (call i64.mul (call vp-reduce-sum (ref xs)) (lit 2))))))
+  (fn vp-map-double (params (xs (vec i64))) (ret (vec i64))
+    (body
+      (let out (vec i64) (vec-new (vec i64))
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref out))
+                (block
+                  (set out (vec-push (ref out) (call i64.mul (idx (ref xs) (ref i)) (lit 2))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  (fn vp-reduce-sum (params (xs (vec i64))) (ret i64)
+    (body
+      (let acc i64 0
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (len (ref xs)))
+                (break (ref acc))
+                (block
+                  (set acc (call i64.add (ref acc) (idx (ref xs) (ref i))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit))))))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted(), "{:?}", check_module(&m));
+    let failures = aury::spec::run_property_tests(&m, 12345, 128);
+    assert!(
+        failures.is_empty(),
+        "property should hold; got {} counterexample(s)",
+        failures.len()
+    );
 }
 
 #[test]
@@ -453,6 +719,18 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         ("f-mean", vec!["[0.5,-0.5]".into()]),
         ("f-point-x", vec![r#"{"x":1.25,"y":-9.5}"#.into()]),
         ("f-make-point", vec!["1.25".into(), "-9.5".into()]),
+        // Track B: growable vecs (vec-push) — build/map/filter/reduce over i64
+        // and f64 must be byte-identical across interp and native.
+        ("vp-build", vec!["5".into()]),
+        ("vp-build", vec!["0".into()]),
+        ("vp-map-double", vec!["[1,2,3,-4]".into()]),
+        ("vp-filter-even", vec!["[1,2,3,4,5,6]".into()]),
+        ("vp-filter-even", vec!["[1,3,5]".into()]),
+        ("vp-reduce-sum", vec!["[10,20,30]".into()]),
+        ("vp-build-sum", vec!["6".into()]),
+        ("vp-fscale", vec!["[1.0,2.0,-0.5]".into()]),
+        ("vp-fscale", vec!["[]".into()]),
+        ("vp-copy-branch", vec!["3".into()]),
     ];
     let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
     for (index, (entry, args)) in cases.into_iter().enumerate() {

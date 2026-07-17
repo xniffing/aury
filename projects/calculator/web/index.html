@@ -20,7 +20,10 @@
 
       <section class="calculator">
         <div class="display">
-          <div id="badge" class="badge" hidden></div>
+          <div class="display-bar">
+            <div id="badge" class="badge" hidden></div>
+            <button id="mode" class="mode-toggle" data-mode="int" title="Toggle integer / float mode">INT</button>
+          </div>
           <div id="expr" class="expr"></div>
           <div id="entry" class="value">0</div>
         </div>
@@ -30,8 +33,8 @@
       <section class="panel">
         <div id="functions" class="functions"></div>
         <footer class="foot">
-          <code>calculator.wasm</code> exports 23 <code>aury__*</code> functions ·
-          scalars cross as <code>BigInt</code> · zero imports
+          <code>calculator.wasm</code> exports 38 <code>aury__*</code> functions ·
+          i64/bool cross as <code>BigInt</code>, f64 as <code>Number</code> · zero imports
         </footer>
       </section>
     </main>

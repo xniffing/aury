@@ -1,61 +1,91 @@
 import { loadCalculator } from "./calculator.js";
 import "./styles.css";
 
-const fmt = new Intl.NumberFormat("en-US");
-const group = (bigint) => fmt.format(bigint);
+const group = new Intl.NumberFormat("en-US").format;
+
+// A mode is either "int" (i64/bool arithmetic, BigInt entry) or "float" (f64
+// arithmetic, decimal/Number entry). The mode decides which Aury exports the
+// keypad and chips invoke, how the entry is parsed and formatted, and which
+// binary-op symbol set is used.
+
+const SYMBOL = {
+  int: {
+    add: "+", subtract: "−", multiply: "×", divide: "÷", modulo: "mod",
+    power: "^", gcd: "gcd", lcm: "lcm", maximum: "max", minimum: "min",
+    average: "avg", percent: "% of",
+  },
+  float: {
+    fadd: "+", fsubtract: "−", fmultiply: "×", fdivide: "÷",
+    fpower: "^", fmaximum: "max", fminimum: "min",
+  },
+};
 
 const el = {
   entry: document.querySelector("#entry"),
   expr: document.querySelector("#expr"),
   badge: document.querySelector("#badge"),
   status: document.querySelector("#status"),
+  mode: document.querySelector("#mode"),
   keys: document.querySelector("#keys"),
   functions: document.querySelector("#functions"),
 };
 
-// Pretty labels + the tiny expression symbol for each binary operator.
-const BINARY_SYMBOL = {
-  add: "+", subtract: "−", multiply: "×", divide: "÷", modulo: "mod",
-  power: "^", gcd: "gcd", lcm: "lcm", maximum: "max", minimum: "min",
-  average: "avg", percent: "% of",
-};
-
 const state = {
+  mode: "int",       // "int" | "float"
   entry: "0",        // string the user is typing
-  acc: null,         // BigInt first operand, or null
-  op: null,          // pending binary op name
+  acc: null,         // first operand (BigInt in int mode, Number in float mode)
+  op: null,          // pending binary op name (within the current mode)
   fresh: true,       // next digit starts a new entry
   ready: false,      // wasm loaded?
 };
 
 let calc = null; // { fns, meta }
 
+// ---- value parsing / formatting ------------------------------------------
+
 function currentValue() {
-  return BigInt(state.entry || "0");
+  if (state.mode === "int") return BigInt(state.entry || "0");
+  const n = Number(state.entry);
+  return Number.isNaN(n) ? 0 : n; // "." or "-" alone reads as 0
+}
+
+function formatFloat(n) {
+  if (typeof n !== "number") return String(n);
+  if (Number.isNaN(n)) return "NaN";
+  if (!Number.isFinite(n)) return n > 0 ? "∞" : "-∞";
+  if (Number.isInteger(n)) return n.toString();
+  return String(Number(n.toPrecision(12))); // trim to 12 sig digits, drop trailing 0s
+}
+
+function fmtValue(v) {
+  return state.mode === "int" ? group(v) : formatFloat(v);
 }
 
 function render() {
-  el.entry.textContent = group(currentValue());
-  if (state.op && state.acc !== null) {
-    el.expr.textContent = `${group(state.acc)} ${BINARY_SYMBOL[state.op]}`;
+  el.entry.textContent = state.mode === "int"
+    ? group(currentValue())
+    : (state.entry || "0");
+  if (state.op !== null && state.acc !== null) {
+    el.expr.textContent = `${fmtValue(state.acc)} ${SYMBOL[state.mode][state.op]}`;
   } else {
     el.expr.textContent = "";
   }
 }
 
-function setEntry(bigint) {
-  state.entry = bigint.toString();
+function setEntry(value) {
+  state.entry = state.mode === "int" ? value.toString() : formatFloat(value);
   state.fresh = true;
 }
+
+// ---- badges --------------------------------------------------------------
 
 function showBadge(text, tone = "info") {
   el.badge.textContent = text;
   el.badge.dataset.tone = tone;
   el.badge.hidden = false;
 }
-function clearBadge() {
-  el.badge.hidden = true;
-}
+function clearBadge() { el.badge.hidden = true; }
+function reportError(err) { showBadge(err instanceof Error ? err.message : String(err), "no"); }
 
 // ---- input actions -------------------------------------------------------
 
@@ -69,6 +99,13 @@ function inputDigit(d) {
   } else {
     state.entry += d;
   }
+  render();
+}
+
+function inputDot() {
+  clearBadge();
+  if (state.fresh) { state.entry = "0."; state.fresh = false; return; }
+  if (!state.entry.includes(".")) state.entry += ".";
   render();
 }
 
@@ -97,30 +134,30 @@ function equals() {
 
 function applyUnary(name) {
   clearBadge();
-  try {
-    setEntry(calc.fns[name](currentValue()));
-  } catch (err) {
-    reportError(err);
-    return;
-  }
+  try { setEntry(calc.fns[name](currentValue())); }
+  catch (err) { reportError(err); return; }
   render();
 }
 
 function applyPredicate(name) {
   try {
     const yes = calc.fns[name](currentValue());
-    const label = name === "is_even" ? (yes ? "even" : "odd")
-                                     : (yes ? "prime" : "not prime");
-    showBadge(`${group(currentValue())} is ${label}`, yes ? "yes" : "no");
-  } catch (err) {
-    reportError(err);
-  }
+    const label = predicateLabel(name, yes);
+    showBadge(`${fmtValue(currentValue())} ${label}`, yes ? "yes" : "no");
+  } catch (err) { reportError(err); }
+}
+
+function predicateLabel(name, yes) {
+  if (name === "is_even") return yes ? "is even" : "is odd";
+  if (name === "is_prime") return yes ? "is prime" : "is not prime";
+  if (name === "is_nan") return yes ? "is NaN" : "is finite";
+  return yes ? "yes" : "no";
 }
 
 function toggleSign() {
   clearBadge();
   const v = currentValue();
-  setEntry(-v);
+  setEntry(state.mode === "int" ? -v : -v);
   state.fresh = false;
   render();
 }
@@ -142,70 +179,100 @@ function clearAll() {
   render();
 }
 
-function reportError(err) {
-  showBadge(err instanceof Error ? err.message : String(err), "no");
+// ---- mode switching ------------------------------------------------------
+
+function setMode(m, { reset = true } = {}) {
+  if (m === state.mode && reset) { clearAll(); return; }
+  state.mode = m;
+  state.acc = null;
+  state.op = null;
+  state.fresh = true;
+  if (reset) state.entry = "0";
+  el.mode.textContent = m === "int" ? "INT" : "FLT";
+  el.mode.dataset.mode = m;
+  buildKeypad();
+  buildFunctions();
+  render();
 }
 
-// ---- keypad / function buttons -------------------------------------------
+// Cross-mode conversions (the `cast` builtin at the boundary). They compute in
+// the current mode then flip to the other, carrying the value along.
+function convertToFloat() {
+  try {
+    const r = calc.fns.to_float(currentValue()); // i64 -> f64
+    setMode("float", { reset: false });
+    setEntry(r);
+  } catch (err) { reportError(err); }
+  render();
+}
+function convertToInt() {
+  try {
+    const r = calc.fns.to_int(currentValue()); // f64 -> i64 (truncates toward zero)
+    setMode("int", { reset: false });
+    setEntry(r);
+  } catch (err) { reportError(err); }
+  render();
+}
 
-// Standard calculator keypad. `null` gaps keep the grid aligned.
-const KEYPAD = [
-  { label: "C", act: clearAll, cls: "util" },
-  { label: "±", act: toggleSign, cls: "util" },
-  { label: "⌫", act: backspace, cls: "util" },
-  { label: "÷", act: () => inputBinary("divide"), cls: "op" },
+// ---- keypad ---------------------------------------------------------------
 
-  { label: "7", digit: "7" }, { label: "8", digit: "8" }, { label: "9", digit: "9" },
-  { label: "×", act: () => inputBinary("multiply"), cls: "op" },
-
-  { label: "4", digit: "4" }, { label: "5", digit: "5" }, { label: "6", digit: "6" },
-  { label: "−", act: () => inputBinary("subtract"), cls: "op" },
-
-  { label: "1", digit: "1" }, { label: "2", digit: "2" }, { label: "3", digit: "3" },
-  { label: "+", act: () => inputBinary("add"), cls: "op" },
-
-  { label: "0", digit: "0", wide: true }, { label: "mod", act: () => inputBinary("modulo"), cls: "op" },
-  { label: "=", act: equals, cls: "equals" },
-];
-
-// Extra functions grouped by kind, rendered as labelled chips.
-const FUNCTION_GROUPS = [
-  {
-    title: "Binary",
-    items: [
-      ["power", "xʸ"], ["gcd", "gcd"], ["lcm", "lcm"],
-      ["maximum", "max"], ["minimum", "min"], ["average", "avg"], ["percent", "% of"],
-    ],
-    run: (name) => inputBinary(name),
-  },
-  {
-    title: "Unary",
-    items: [
-      ["square", "x²"], ["isqrt", "√x"], ["factorial", "x!"], ["fibonacci", "fib"],
-      ["negate", "±x"], ["absolute", "|x|"], ["double", "2x"],
-      ["increment", "x+1"], ["decrement", "x−1"],
-    ],
-    run: (name) => applyUnary(name),
-  },
-  {
-    title: "Predicates",
-    items: [["is_even", "even?"], ["is_prime", "prime?"]],
-    run: (name) => applyPredicate(name),
-  },
-];
+// The keypad's four operator slots + the bottom row differ by mode: float mode
+// drops `mod` (no f64 modulo) and gains a decimal-point key.
+function opFor(slot) {
+  return state.mode === "int"
+    ? { divide: "divide", multiply: "multiply", subtract: "subtract", add: "add" }[slot]
+    : { divide: "fdivide", multiply: "fmultiply", subtract: "fsubtract", add: "fadd" }[slot];
+}
 
 function buildKeypad() {
-  for (const key of KEYPAD) {
-    const btn = document.createElement("button");
-    btn.textContent = key.label;
-    btn.className = `key ${key.cls || "num"}${key.wide ? " wide" : ""}`;
-    btn.addEventListener("click", () => (key.digit ? inputDigit(key.digit) : key.act()));
-    el.keys.appendChild(btn);
+  el.keys.replaceChildren();
+  const mk = (label, cls, act, wide) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.className = `key ${cls || "num"}${wide ? " wide" : ""}`;
+    b.addEventListener("click", act);
+    return b;
+  };
+  const rows = [
+    ["C", "util", clearAll, "±", "util", toggleSign, "⌫", "util", backspace, "÷", "op", () => inputBinary(opFor("divide"))],
+    ["7", null, () => inputDigit("7"), "8", null, () => inputDigit("8"), "9", null, () => inputDigit("9"), "×", "op", () => inputBinary(opFor("multiply"))],
+    ["4", null, () => inputDigit("4"), "5", null, () => inputDigit("5"), "6", null, () => inputDigit("6"), "−", "op", () => inputBinary(opFor("subtract"))],
+    ["1", null, () => inputDigit("1"), "2", null, () => inputDigit("2"), "3", null, () => inputDigit("3"), "+", "op", () => inputBinary(opFor("add"))],
+  ];
+  for (const r of rows) {
+    for (let i = 0; i < r.length; i += 3) el.keys.appendChild(mk(r[i], r[i + 1], r[i + 2], false));
   }
+  // bottom row
+  if (state.mode === "int") {
+    el.keys.appendChild(mk("0", null, () => inputDigit("0"), true));
+    el.keys.appendChild(mk("mod", "op", () => inputBinary("modulo"), false));
+  } else {
+    el.keys.appendChild(mk("0", null, () => inputDigit("0"), true));
+    el.keys.appendChild(mk(".", null, inputDot, false));
+  }
+  el.keys.appendChild(mk("=", "equals", equals, false));
 }
 
+// ---- function chips ------------------------------------------------------
+
+const INT_GROUPS = [
+  { title: "Binary", items: [["power","xʸ"],["gcd","gcd"],["lcm","lcm"],["maximum","max"],["minimum","min"],["average","avg"],["percent","% of"]], run: (n) => inputBinary(n) },
+  { title: "Unary", items: [["square","x²"],["isqrt","√x"],["factorial","x!"],["fibonacci","fib"],["negate","±x"],["absolute","|x|"],["double","2x"],["increment","x+1"],["decrement","x−1"]], run: (n) => applyUnary(n) },
+  { title: "Predicates", items: [["is_even","even?"],["is_prime","prime?"]], run: (n) => applyPredicate(n) },
+  { title: "Convert", items: [["to_float","→ float"]], run: () => convertToFloat() },
+];
+
+const FLOAT_GROUPS = [
+  { title: "Binary", items: [["fpower","xʸ"],["fmaximum","max"],["fminimum","min"]], run: (n) => inputBinary(n) },
+  { title: "Unary", items: [["fsquare","x²"],["fsqrt","√x"],["fnegate","±x"],["fabs","|x|"],["freciprocal","1/x"]], run: (n) => applyUnary(n) },
+  { title: "Predicates", items: [["is_nan","nan?"]], run: (n) => applyPredicate(n) },
+  { title: "Convert", items: [["to_int","→ int"]], run: () => convertToInt() },
+];
+
 function buildFunctions() {
-  for (const grp of FUNCTION_GROUPS) {
+  el.functions.replaceChildren();
+  const groups = state.mode === "int" ? INT_GROUPS : FLOAT_GROUPS;
+  for (const grp of groups) {
     const section = document.createElement("div");
     section.className = "fn-group";
     const h = document.createElement("h3");
@@ -226,22 +293,25 @@ function buildFunctions() {
   }
 }
 
-// Physical keyboard support.
+// ---- keyboard ------------------------------------------------------------
+
 window.addEventListener("keydown", (e) => {
   if (!state.ready) return;
   if (e.key >= "0" && e.key <= "9") return inputDigit(e.key);
+  if (state.mode === "float" && (e.key === "." || e.key === ",")) return inputDot();
   const map = {
-    "+": () => inputBinary("add"), "-": () => inputBinary("subtract"),
-    "*": () => inputBinary("multiply"), "/": () => inputBinary("divide"),
-    "%": () => inputBinary("modulo"), "^": () => inputBinary("power"),
+    "+": () => inputBinary(opFor("add")), "-": () => inputBinary(opFor("subtract")),
+    "*": () => inputBinary(opFor("multiply")), "/": () => inputBinary(opFor("divide")),
     "Enter": equals, "=": equals, "Backspace": backspace, "Escape": clearAll,
   };
+  if (state.mode === "int") map["%"] = () => inputBinary("modulo");
   if (map[e.key]) { e.preventDefault(); map[e.key](); }
 });
 
 // ---- boot ----------------------------------------------------------------
 
 async function boot() {
+  el.mode.addEventListener("click", () => setMode(state.mode === "int" ? "float" : "int"));
   buildKeypad();
   buildFunctions();
   render();
@@ -255,6 +325,7 @@ async function boot() {
     el.status.classList.add("error");
     el.keys.querySelectorAll("button").forEach((b) => (b.disabled = true));
     el.functions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    el.mode.disabled = true;
   }
 }
 

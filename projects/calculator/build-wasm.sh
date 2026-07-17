@@ -12,10 +12,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL="$(git -C "$HERE" rev-parse --show-toplevel)/.claude/skills/aury"
 
-# Public functions exported to the browser (internal *_iter / *_check helpers stay private).
+# Public functions exported to the browser (internal helpers stay private).
+# Integer (i64/bool) exports cross the wasm boundary as JS BigInt; the f64
+# exports cross as JS Number (no linear-memory marshaling — f64 is a wasm scalar).
 EXPORTS="add,subtract,multiply,divide,modulo,percent,average,maximum,minimum,\
 negate,absolute,square,increment,decrement,double,gcd,lcm,power,factorial,\
-fibonacci,isqrt,is_even,is_prime"
+fibonacci,isqrt,is_even,is_prime,\
+fadd,fsubtract,fmultiply,fdivide,fmaximum,fminimum,fpower,fnegate,fabs,fsquare,\
+freciprocal,fsqrt,to_float,to_int,is_nan"
 
 echo "==> validate + property-test (skill: dev.sh)"
 "$SKILL/dev.sh" "$HERE/calculator.json" | tail -3

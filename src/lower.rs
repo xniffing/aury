@@ -221,6 +221,7 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out_str("declare ptr @aury_box_slot(ptr, i64)\n");
     l.out_str("declare ptr @aury_vec_new(i64)\n");
     l.out_str("declare ptr @aury_vec_slot(ptr, i64)\n");
+    l.out_str("declare ptr @aury_vec_push(ptr, i64)\n");
     l.out_str("declare void @aury_rng_init(i64)\n");
     l.out_str("declare i64 @aury_rng_next()\n");
     l.out_str("declare i64 @aury_i64_div(i64, i64)\n");
@@ -584,6 +585,7 @@ impl Lowerer {
             Expr::Cast { target, value, .. } => self.lower_cast(target, value),
             Expr::VecNew { ty, elems, .. } => self.lower_vec_new(ty, elems),
             Expr::Index { target, index, .. } => self.lower_index(target, index),
+            Expr::VecPush { target, value, .. } => self.lower_vec_push(target, value),
             Expr::Len { target, .. } => self.lower_len(target),
             Expr::StructNew { name, fields, .. } => self.lower_struct_new(name, fields),
             Expr::Field { target, field, .. } => self.lower_field(target, field),
@@ -655,6 +657,23 @@ impl Lowerer {
             self.out_str(&format!("  store i64 {}, ptr {}\n", bits, slot));
         }
         (Some(vector), "ptr".into(), false)
+    }
+
+    fn lower_vec_push(&mut self, target: &Expr, value: &Expr) -> (Option<String>, String, bool) {
+        // The appended element is coerced into i64 slot bits via its own lowered
+        // LLVM type, exactly as `vec-new` stores elements (f64 -> bitcast to i64,
+        // struct/nested-vec ptr -> ptrtoint), so mixed element types round-trip.
+        let (vector, _, vector_diverged) = self.lower_expr(target);
+        if vector_diverged { return (None, String::new(), true); }
+        let (elem_value, elem_llvm_ty, elem_diverged) = self.lower_expr(value);
+        if elem_diverged { return (None, String::new(), true); }
+        let bits = self.value_to_bits(elem_value.unwrap(), &elem_llvm_ty);
+        let grown = self.fresh();
+        self.out_str(&format!(
+            "  {} = call ptr @aury_vec_push(ptr {}, i64 {})\n",
+            grown, vector.unwrap(), bits
+        ));
+        (Some(grown), "ptr".into(), false)
     }
 
     fn lower_index(&mut self, target: &Expr, index: &Expr) -> (Option<String>, String, bool) {
@@ -1442,6 +1461,7 @@ impl Lowerer {
                 Type::Vec(t) => *t,
                 _ => Type::Unit,
             },
+            Expr::VecPush { target, .. } => self.infer_env(target, env),
             Expr::Len { .. } => Type::I64,
             Expr::StructNew { name, .. } => Type::Struct(name.clone()),
             Expr::Field { target, field, .. } => match self.infer_env(target, env) {
@@ -1499,6 +1519,9 @@ impl Lowerer {
                 Self::expr_diverges(value)
             }
             Expr::VecNew { elems, .. } => elems.iter().any(Self::expr_diverges),
+            Expr::VecPush { target, value, .. } => {
+                Self::expr_diverges(target) || Self::expr_diverges(value)
+            }
             Expr::Index { target, index, .. } => {
                 Self::expr_diverges(target) || Self::expr_diverges(index)
             }
@@ -1540,6 +1563,9 @@ impl Lowerer {
             Expr::Return { value, .. } => Self::loop_body_has_break(value),
             Expr::Copy { value, .. } | Expr::Cast { value, .. } => Self::loop_body_has_break(value),
             Expr::VecNew { elems, .. } => elems.iter().any(Self::loop_body_has_break),
+            Expr::VecPush { target, value, .. } => {
+                Self::loop_body_has_break(target) || Self::loop_body_has_break(value)
+            }
             Expr::Index { target, index, .. } => {
                 Self::loop_body_has_break(target) || Self::loop_body_has_break(index)
             }
@@ -1588,6 +1614,9 @@ impl Lowerer {
             Expr::Index { target, index, .. } => self
                 .first_break_type(target, env)
                 .or_else(|| self.first_break_type(index, env)),
+            Expr::VecPush { target, value, .. } => self
+                .first_break_type(target, env)
+                .or_else(|| self.first_break_type(value, env)),
             Expr::Len { target, .. } | Expr::Field { target, .. } => self.first_break_type(target, env),
             Expr::StructNew { fields, .. } => {
                 fields.iter().find_map(|(_, v)| self.first_break_type(v, env))
