@@ -42,7 +42,7 @@ its thesis, architecture, evidence, and limitations.
 8. [Intent verification](#intent-verification)
 9. [AI authoring surface](#ai-authoring-surface)
 10. [Interpreter and native backend](#interpreter-and-native-backend)
-11. [Case study: live lunar distance](#case-study-live-lunar-distance)
+11. [Case study: calculator in the browser](#case-study-calculator-in-the-browser)
 12. [Build and use](#build-and-use)
 13. [Evaluation](#evaluation-and-evidence)
 14. [Scope and limitations](#scope-limitations-and-threats-to-validity)
@@ -469,47 +469,41 @@ successful compilation. Integration tests compare both backends across:
 
 ---
 
-## Case study: live lunar distance
+## Case study: calculator in the browser
 
-[`moon-distance/`](moon-distance/) is a larger end-to-end Aury program and
-visual application.
+[`projects/calculator/`](projects/calculator/) is an end-to-end Aury program
+compiled to a WebAssembly library and driven by a Vite frontend.
 
-The Aury core computes the Earth–Moon geocentric distance from a Unix timestamp
-using only `i64` arithmetic:
-
-1. seconds since J2000 are converted into the lunar fundamental angles;
-2. angles use millidegree fixed-point representation;
-3. cosine uses Q6 arithmetic and an eighth-order polynomial after quadrant
-   reduction;
-4. 46 periodic terms from the lunar distance series are accumulated;
-5. an immutable `MoonDistance` struct returns center distance, approximate
-   surface distance, one-way light time, and range classification.
+The Aury core is a full calculator written in pure `i64`/`bool` arithmetic — 23
+public functions across binary ops (`add`, `divide`, `gcd`, `lcm`, `power`, …),
+unary ops (`square`, `isqrt`, `factorial`, `fibonacci`, …), and predicates
+(`is_even`, `is_prime`). Aury v0 has no mutable loops, so every iterative
+function is expressed as recursion. A `spec` block carries eight properties
+(commutativity, add/sub inverse, negate involution, gcd-divides-both, …) that
+are property-tested during `aury loop`; the program is accepted in **0 patches**
+and the native backend is asserted to match the interpreter.
 
 ```bash
-./moon-distance/run-now.sh
-./moon-distance/run-now.sh --native
+./projects/calculator/build-wasm.sh   # JSON AST → validate/property-test → wasm-lib
 ```
 
-The live dashboard combines vanilla HTML/CSS/JavaScript and D3 with a
-zero-dependency Node server:
+The `build-wasm.sh` pipeline runs the repair loop over the hand-authored JSON AST
+and builds a `wasm32-wasi` **reactor** module exporting `aury__<fn>`. Each
+export is scalar, so it crosses the JS boundary as a `BigInt` with no
+marshaling, and the module links with **zero imports** — the browser needs no
+WASI shim and instantiates it straight from an `ArrayBuffer`.
 
 ```bash
-./moon-distance/start-dashboard.sh
-# http://127.0.0.1:4173
+cd projects/calculator/web
+npm install
+npm run dev        # http://localhost:5173
 ```
 
-Aury v0 has no clock or network capability. The server therefore reads the
-system clock, passes the minute timestamp into `aury compile`, executes the
-native LLVM result, parses the returned struct, and exposes it as JSON. The
-browser refreshes at each minute boundary and animates the current separation,
-light-time signal, perigee/apogee position, and session history.
+The Vite frontend serves the module at `/calculator.wasm`; every keypad and
+function button invokes an `aury__*` export directly in the browser.
 
-At `2026-07-15T08:32Z`, the model produced approximately **362,738 km** while
-JPL Horizons reported approximately **362,754 km**, a difference of 16 km.
-This comparison is a case-study observation, not a general accuracy bound.
-
-See [`moon-distance/README.md`](moon-distance/README.md) for model details and
-usage.
+See [`projects/calculator/README.md`](projects/calculator/README.md) for the
+full pipeline and details.
 
 ---
 
@@ -519,8 +513,7 @@ usage.
 
 - Rust toolchain with Cargo
 - `clang` for native compilation
-- Node.js only for the optional lunar dashboard
-- Python 3 only to regenerate the lunar typed-object JSON
+- Node.js only for the optional calculator frontend (Vite)
 
 ### Build
 
@@ -536,10 +529,10 @@ The binary is written to `target/release/aury`.
 ```bash
 AURY=target/release/aury
 
-$AURY validate moon-distance/moon-distance.aury
-$AURY test moon-distance/moon-distance.aury 12345
-$AURY run moon-distance/moon-distance.aury moon-report "$(date -u +%s)"
-$AURY compile moon-distance/moon-distance.aury moon-report "$(date -u +%s)" -o /tmp/moon-native
+$AURY validate projects/calculator/calculator.repaired.aury
+$AURY test projects/calculator/calculator.repaired.aury 12345
+$AURY run projects/calculator/calculator.repaired.aury factorial 10
+$AURY compile projects/calculator/calculator.repaired.aury gcd 48 36 -o /tmp/aury-gcd
 ```
 
 ### CLI
@@ -583,8 +576,8 @@ must match `aury run` and `aury compile`; pass `--no-run` to only build.
 calls them directly. Functions whose parameters and result are scalars (`i64`,
 `bool`) cross the boundary as wasm `i64` with no marshaling; aggregate types are
 linear-memory pointers and are flagged. The
-[moon-distance example](moon-distance/README.md) compiles its lunar model this
-way and runs it in the browser. Both wasm commands share the same toolchain:
+[calculator example](projects/calculator/README.md) compiles its functions this
+way and runs them in the browser. Both wasm commands share the same toolchain:
 
 It needs a clang with the WebAssembly target plus a wasi-libc sysroot,
 `wasm-ld`, and the wasm32 `compiler-rt` builtins. The self-contained
@@ -723,8 +716,11 @@ src/main.rs                command-line interface and embedded-runtime driver
 tests/integration.rs       end-to-end and differential regression suite
 tests/native_parity.aury   aggregate/RNG/control-flow parity fixture
 
-moon-distance/             complete fixed-point Aury case study
-moon-distance/web/         live D3 dashboard and native-data bridge
+.claude/skills/aury/dev.sh            author/repair loop harness
+.claude/skills/aury/wasm-lib.sh       wasm32-wasi reactor builder
+.claude/skills/aury/wasm-toolchain.sh wasm toolchain detection
+projects/calculator/       calculator compiled to wasm-lib
+projects/calculator/web/   Vite frontend calling the wasm exports
 ```
 
 Generated build output, native executables, LLVM scratch files, and local agent

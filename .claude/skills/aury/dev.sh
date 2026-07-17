@@ -28,6 +28,7 @@ banner() { printf '\n=== %s ===\n' "$1"; }
 emit()   { printf '\nAURY_RESULT %s\n' "$1"; }
 jstr()   { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)"
 [ -n "$REPO_ROOT" ] || { emit '{"status":"error","message":"not inside the aury git repo"}'; exit 1; }
 cd "$REPO_ROOT" || exit 1
@@ -114,10 +115,13 @@ if [ -n "$ENTRY" ]; then
 
   # Optional wasm32-wasi parity: build+run the same entry through `aury wasm`
   # and assert it equals the interpreter. Gated on a wasm runtime being present;
-  # if the wasm toolchain is incomplete the build fails and the stage is skipped
-  # (never fatal) — set WASI_SDK_PATH or AURY_WASM_CLANG/WASI_SYSROOT + wasm-ld.
+  # the bundled wasm-toolchain.sh locates clang/sysroot/wasm-ld (no-op if the
+  # env is already set or nothing is found), and the stage is skipped, never
+  # fatal, if the toolchain is incomplete.
   if command -v wasmtime >/dev/null 2>&1 || command -v wasmer >/dev/null 2>&1; then
     banner "WASM (wasm32-wasi; must equal the interpreter result)"
+    # shellcheck source=wasm-toolchain.sh
+    source "$SKILL_DIR/wasm-toolchain.sh"
     WASM_MODULE="$(mktemp -u).wasm"
     WASM_OUT="$("$AURY" wasm "$WORK" "$ENTRY" ${ARGS[@]+"${ARGS[@]}"} -o "$WASM_MODULE" 2>/dev/null)"
     WASM_CODE=$?

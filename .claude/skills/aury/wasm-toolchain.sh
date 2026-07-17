@@ -1,5 +1,6 @@
-# Shared wasm32-wasi toolchain detection for the moon-distance example.
-# Source this (do not execute it) to export the environment `aury wasm` needs:
+# wasm32-wasi toolchain detection for the Aury skill. Sourced by dev.sh (wasm
+# parity stage) and wasm-lib.sh (reactor builder), and reusable by any project.
+# Source this (do not execute it) to export the env `aury wasm`/`wasm-lib` need:
 #   AURY_WASM_CLANG  clang with the WebAssembly target
 #   WASI_SYSROOT     wasi-libc sysroot
 #   PATH             prepended with the directory holding `wasm-ld`

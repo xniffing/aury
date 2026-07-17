@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aury Calculator · wasm32-wasi</title>
+  </head>
+  <body>
+    <main class="app">
+      <header class="masthead">
+        <div class="brand">
+          <span class="logo">∑</span>
+          <div>
+            <h1>Aury Calculator</h1>
+            <p>Every operation runs in a wasm32-wasi module compiled from Aury.</p>
+          </div>
+        </div>
+        <p id="status" class="status">Loading Aury wasm module…</p>
+      </header>
+
+      <section class="calculator">
+        <div class="display">
+          <div id="badge" class="badge" hidden></div>
+          <div id="expr" class="expr"></div>
+          <div id="entry" class="value">0</div>
+        </div>
+        <div id="keys" class="keys"></div>
+      </section>
+
+      <section class="panel">
+        <div id="functions" class="functions"></div>
+        <footer class="foot">
+          <code>calculator.wasm</code> exports 23 <code>aury__*</code> functions ·
+          scalars cross as <code>BigInt</code> · zero imports
+        </footer>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

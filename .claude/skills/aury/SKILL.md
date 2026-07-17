@@ -96,7 +96,26 @@ Once a program is accepted it can also be built for `wasm32-wasi`:
   linear-memory pointers and are flagged. Reachable-from-`i64`-only programs
   link with **zero imports**, so the host needs no WASI shim.
 
-Both need a `wasm32-wasi` toolchain (clang with the WebAssembly target, a
-wasi-libc sysroot, `wasm-ld`) resolved via `WASI_SDK_PATH` / `AURY_WASM_CLANG` /
-`WASI_SYSROOT`. See `moon-distance/` for a program compiled with `wasm-lib` and
-run in the browser. Authoring/repair never require these — they are backends.
+### `wasm-lib.sh` — the reactor builder (skill helper)
+
+Prefer the bundled helper over calling `aury wasm-lib` by hand — it is the
+shipping counterpart to `dev.sh` and handles ingest + toolchain detection:
+
+```bash
+./.claude/skills/aury/wasm-lib.sh <program.json|program.aury> \
+  --export <fn>[,<fn>...] [-o out.wasm]
+```
+
+It ingests JSON to a canonical `.aury` (`--force`) if needed, sources the
+bundled `wasm-toolchain.sh` to locate clang / wasi sysroot / `wasm-ld`, builds
+the reactor, and prints the output path (or `WASM_LIB_ERROR <msg>`). Defaults
+the output to `<stem>.wasm`. A project's own build script then only declares its
+export list and output path — see `projects/calculator/build-wasm.sh`.
+
+Both wasm commands need a `wasm32-wasi` toolchain (clang with the WebAssembly
+target, a wasi-libc sysroot, `wasm-ld`). `wasm-toolchain.sh` (bundled with this
+skill) resolves it from `WASI_SDK_PATH` / `AURY_WASM_CLANG` / `WASI_SYSROOT`, a
+wasi-sdk install, or a Homebrew `llvm`+`lld`+`wasi-libc` assembly; `dev.sh` and
+`wasm-lib.sh` source it automatically. See `projects/calculator/` for a program
+compiled with `wasm-lib` and run in the browser. Authoring/repair never require
+any of this — the wasm targets are backends only.
