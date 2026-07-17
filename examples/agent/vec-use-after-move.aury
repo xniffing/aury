@@ -1,0 +1,11 @@
+; Region-gate convergence case (Track B affine move-tracking). `base` is pushed
+; into `a` (which moves it), then used again to build `b` — a USE_AFTER_MOVE. The
+; loop mechanically inserts `(copy base)`, reviving a fresh independent value, so
+; both vectors are built and `twice(n)` returns len(a)+len(b) = 3+3 = 6.
+(module vecmove
+  (fn twice (params (n i64)) (ret i64)
+    (body
+      (let base (vec i64) (vec-new (vec i64) (lit 1) (lit 2))
+        (let a (vec i64) (vec-push (ref base) (ref n))
+          (let b (vec i64) (vec-push (ref base) (ref n))
+            (call i64.add (len (ref a)) (len (ref b)))))))))

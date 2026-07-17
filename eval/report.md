@@ -11,10 +11,23 @@ Columns: **First-shot** = the model's initial program passed type + intent check
 | mean-f64 | ✓ | ✓ | 0 | 1/1 |  |
 | parse-classify | ✓ | ✓ | 0 | 2/2 |  |
 | dice-effect | ✓ | ✓ | 0 | — |  |
-| effect-leak | type✗ | ✓ | 1 | 2/2 |  |
+| effect-leak | effect✗ | ✓ | 1 | 2/2 |  |
 | vec-pipeline | ✓ | ✓ | 0 | 2/2 |  |
+| alias-region | region✗ | ✓ | 1 | 1/1 |  |
+| vec-use-after-move | region✗ | ✓ | 1 | 2/2 |  |
 | calculator | ✓ | ✓ | 0 | 3/3 |  |
 | unterminated | parse✗ | ✓ | 1 | 1/1 |  |
 | false-property | intent✗ | ø | 0 | — | correctly rejected (intent gate) |
 
-**10/10 outcomes as expected** · first-shot-valid 8 · rescued by repair 2 · oracle checks 15/15.
+**12/12 outcomes as expected** · first-shot-valid 8 · rescued by repair 4 · oracle checks 18/18.
+
+### First-shot failures by gate
+
+**Converged** = the loop mechanically repaired the program to acceptance; **rejected✓** = a deliberately-wrong spec the loop correctly refused (true negative).
+
+| Gate | first-shot fails | converged | rejected✓ |
+|------|:----------------:|:---------:|:---------:|
+| parse | 1 | 1 | 0 |
+| effect | 1 | 1 | 0 |
+| region | 2 | 2 | 0 |
+| intent | 1 | 0 | 1 |

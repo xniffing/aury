@@ -721,8 +721,8 @@ the loop must *refuse* to accept. The run is deterministic (fixed seed) and is a
 `cargo test` gate (`evaluation_corpus_converges_as_expected`).
 
 The honest baseline this answers is **first-shot vs post-repair** — how many
-tasks the loop rescues that would otherwise be rejected — over the v0.1 language
-range (contracts, mutable loops, `f64`):
+tasks the loop rescues that would otherwise be rejected — over the v0.2 language
+range (contracts, mutable loops, `f64`, effects, growable vecs, regions):
 
 | Task | First-shot | Loop | Patches | Oracle |
 |------|:----------:|:----:|:-------:|:------:|
@@ -731,27 +731,41 @@ range (contracts, mutable loops, `f64`):
 | mean-f64 | ✓ | ✓ | 0 | 1/1 |
 | parse-classify | ✓ | ✓ | 0 | 2/2 |
 | dice-effect | ✓ | ✓ | 0 | — |
-| effect-leak | type✗ | ✓ | 1 | 2/2 |
+| effect-leak | effect✗ | ✓ | 1 | 2/2 |
 | vec-pipeline | ✓ | ✓ | 0 | 2/2 |
+| alias-region | region✗ | ✓ | 1 | 1/1 |
+| vec-use-after-move | region✗ | ✓ | 1 | 2/2 |
 | calculator | ✓ | ✓ | 0 | 3/3 |
 | unterminated | parse✗ | ✓ | 1 | 1/1 |
 | false-property | intent✗ | ø (rejected) | 0 | — |
 
-**10/10 outcomes as expected** · 8 first-shot-valid · 2 rescued by repair (a
-paren-deficit program the parse-repair closes, and an under-declared effect row
-the loop mechanically widens) · 1 deliberately-wrong spec correctly rejected by
-the intent gate · 15/15 oracle checks. Regenerate the table and a CSV with
+**12/12 outcomes as expected** · 8 first-shot-valid · 4 rescued by repair · 1
+deliberately-wrong spec correctly rejected by the intent gate · 18/18 oracle
+checks. Regenerate the table and a CSV with
 `aury eval eval/corpus.json --md eval/report.md --csv eval/report.csv`.
 
+**First-shot failures by gate — and which the loop mechanically converges.** The
+v0.2 loop closes *structural* gates, not just parse: an under-declared effect row
+is widened, a use-after-move gets a copy, and an aliasing conflict is split into
+disjoint regions — all applied mechanically and re-validated.
+
+| Gate | first-shot fails | converged | rejected✓ |
+|------|:----------------:|:---------:|:---------:|
+| parse | 1 | 1 | 0 |
+| effect | 1 | 1 | 0 |
+| region | 2 | 2 | 0 |
+| intent | 1 | 0 | 1 |
+
 The corpus is intentionally small and its programs are curated (so most pass
-first-shot); it demonstrates the loop's mechanics and the intent gate end to
+first-shot); it demonstrates the loop's mechanics and per-gate convergence end to
 end, not a large-sample success rate.
 
 ### What has not yet been measured
 
 - first-shot generation success against Python, Rust, or a baseline IR (the
-  corpus above measures repair convergence *within* Aury, not a cross-language
-  comparison — that requires running another toolchain and a matched task set);
+  corpus above measures repair convergence *within* Aury — including a per-gate
+  convergence breakdown — but not a cross-language comparison, which requires
+  model-generated programs in another language on a matched task set);
 - repair-loop convergence at scale over a large, uncurated intent corpus;
 - semantic preservation under large-program optimization;
 - user comprehension of generated properties;
