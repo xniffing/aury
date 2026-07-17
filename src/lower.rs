@@ -57,6 +57,12 @@ fn llvm_type(t: &Type) -> String {
     }
 }
 
+/// A scalar type holds no pointer, so a region returning one lets its arena be
+/// freed with nothing left reachable by the caller.
+fn is_scalar_type(t: &Type) -> bool {
+    matches!(t, Type::I64 | Type::F64 | Type::Bool | Type::Unit)
+}
+
 /// Escape bytes for an LLVM `c"..."` constant and append its NUL terminator.
 fn llvm_c_string(value: &str) -> String {
     let mut escaped = String::new();
@@ -222,6 +228,8 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out_str("declare ptr @aury_vec_new(i64)\n");
     l.out_str("declare ptr @aury_vec_slot(ptr, i64)\n");
     l.out_str("declare ptr @aury_vec_push(ptr, i64)\n");
+    l.out_str("declare void @aury_region_enter()\n");
+    l.out_str("declare void @aury_region_exit()\n");
     l.out_str("declare void @aury_rng_init(i64)\n");
     l.out_str("declare i64 @aury_rng_next()\n");
     l.out_str("declare i64 @aury_i64_div(i64, i64)\n");
@@ -579,8 +587,21 @@ impl Lowerer {
                 }
                 self.lower_expr(tail)
             }
-            // v0 region/copy semantics are explicit immutable-value no-ops.
-            Expr::Region { body, .. } => self.lower_expr(body),
+            // A region becomes a real arena when it is provably escape-free: a
+            // scalar result (holds no pointer) and no set/return/break in the
+            // body (so the normal tail exit always runs and nothing leaks out to
+            // an outer binding). Then every allocation inside is dead scratch and
+            // is bulk-freed at exit. Otherwise the region stays a pass-through.
+            Expr::Region { body, .. } => {
+                if is_scalar_type(&self.infer_type(body)) && !Self::region_escapes(body) {
+                    self.out_str("  call void @aury_region_enter()\n");
+                    let (value, ty, diverged) = self.lower_expr(body);
+                    self.out_str("  call void @aury_region_exit()\n");
+                    (value, ty, diverged)
+                } else {
+                    self.lower_expr(body)
+                }
+            }
             Expr::Copy { value, .. } => self.lower_expr(value),
             Expr::Cast { target, value, .. } => self.lower_cast(target, value),
             Expr::VecNew { ty, elems, .. } => self.lower_vec_new(ty, elems),
@@ -1489,6 +1510,46 @@ impl Lowerer {
                 self.infer_env(&arm.body, &env)
             })
             .unwrap_or(Type::Unit)
+    }
+
+    /// True if evaluating `e` could leave its enclosing region other than
+    /// through the normal tail (a `set` may publish an in-region allocation to
+    /// an outer binding; a `return`/`break` jumps past the region's exit). Used
+    /// to decide whether a region is safe to arena-manage (conservative: any
+    /// such node anywhere in the body disables freeing).
+    fn region_escapes(e: &Expr) -> bool {
+        match e {
+            Expr::Set { .. } | Expr::Return { .. } | Expr::Break { .. } => true,
+            Expr::Lit { .. } | Expr::Ref { .. } => false,
+            Expr::Call { args, .. } => args.iter().any(Self::region_escapes),
+            Expr::If { cond, then, els, .. } => {
+                Self::region_escapes(cond)
+                    || Self::region_escapes(then)
+                    || Self::region_escapes(els)
+            }
+            Expr::Match { scrut, arms, .. } => {
+                Self::region_escapes(scrut) || arms.iter().any(|a| Self::region_escapes(&a.body))
+            }
+            Expr::Let { init, body, .. } => {
+                Self::region_escapes(init) || Self::region_escapes(body)
+            }
+            Expr::Loop { body, .. } | Expr::Region { body, .. } => Self::region_escapes(body),
+            Expr::Block { stmts, tail, .. } => {
+                stmts.iter().any(Self::region_escapes) || Self::region_escapes(tail)
+            }
+            Expr::Copy { value, .. } | Expr::Cast { value, .. } => Self::region_escapes(value),
+            Expr::VecNew { elems, .. } => elems.iter().any(Self::region_escapes),
+            Expr::VecPush { target, value, .. } => {
+                Self::region_escapes(target) || Self::region_escapes(value)
+            }
+            Expr::Index { target, index, .. } => {
+                Self::region_escapes(target) || Self::region_escapes(index)
+            }
+            Expr::Len { target, .. } | Expr::Field { target, .. } => Self::region_escapes(target),
+            Expr::StructNew { fields, .. } => {
+                fields.iter().any(|(_, v)| Self::region_escapes(v))
+            }
+        }
     }
 
     /// Match the validator's divergence rule when choosing a control-flow

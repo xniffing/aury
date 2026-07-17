@@ -212,6 +212,37 @@ fn repair_loop_widens_existing_effect_row_in_place() {
     assert!(check_module(&m).is_accepted());
 }
 
+// ---- Track C1b: region arena ----
+
+#[test]
+fn arena_frees_region_allocations() {
+    // Compile the standalone accounting harness against the runtime and run it;
+    // exit code 0 means the arena freed every region-scoped allocation and the
+    // live count returned to baseline (nested regions included).
+    if std::process::Command::new("clang").arg("--version").output().is_err() {
+        return; // hermetic: skip when clang is unavailable
+    }
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let runtime = format!("{}/runtime/aury_rt.c", manifest);
+    let harness = format!("{}/tests/arena_accounting.c", manifest);
+    let exe = std::env::temp_dir().join("aury_arena_accounting.exe");
+    let build = std::process::Command::new("clang")
+        .args(["-O2", &harness, &runtime, "-o", exe.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "clang failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = std::process::Command::new(&exe).output().unwrap();
+    assert!(
+        run.status.success(),
+        "arena accounting failed at assertion #{:?}",
+        run.status.code()
+    );
+}
+
 // ---- Track C: region aliasing ----
 
 #[test]
@@ -731,6 +762,9 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         ("vp-fscale", vec!["[1.0,2.0,-0.5]".into()]),
         ("vp-fscale", vec!["[]".into()]),
         ("vp-copy-branch", vec!["3".into()]),
+        // Track C1b: an arena-managed region (frees scratch) is observably equal.
+        ("region-scalar", vec!["5".into()]),
+        ("region-scalar", vec!["0".into()]),
     ];
     let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
     for (index, (entry, args)) in cases.into_iter().enumerate() {

@@ -789,11 +789,21 @@ advantage for model-generated software.
 
 ### Region semantics
 
-The validator represents regions, references, affine values, and explicit
-copies. Native and interpreter v0 semantics intentionally treat `region` and
-`copy` as immutable-value pass-through operations. Native aggregate allocations
-live for the process lifetime. The prototype does **not** claim arena lifetime,
-aliasing, or deallocation guarantees that it has not implemented.
+The validator checks region **aliasing**: a `mut` reference is exclusive to its
+region, so sharing a region with any other reference is a pointwise
+`ALIAS_CONFLICT` with a mechanical `split_region` repair. Affine move-tracking is
+also enforced (`vec-push` consumes its target; a later use is `USE_AFTER_MOVE`,
+repaired by inserting a copy).
+
+Regions are a **real arena** when the native backend can prove them escape-free —
+a scalar result and no `set`/`return`/`break` in the body — in which case every
+allocation made inside is bulk-freed at region exit (verified by allocation
+accounting; the observable result is unchanged, so interpreter, native, and wasm
+still agree). Regions that could let an aggregate escape (an aggregate result, or
+control flow leaving the region) conservatively fall back to process-lifetime
+allocation. Unconditional freeing with a static `REGION_ESCAPE` check, and
+result-relocation for escaping aggregates, are not yet implemented; `copy`
+remains an immutable-value pass-through.
 
 ### Contracts and proof
 

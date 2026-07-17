@@ -17,10 +17,59 @@ typedef aury_str_t *aury_str;
 typedef struct { int64_t len; int64_t *slots; } aury_vec_t;
 typedef struct { int64_t tag; int64_t payload; } aury_result_t;
 
+// ---- Region arenas -------------------------------------------------------
+// A stack of allocation frames. While a region is active, every allocation is
+// registered in the current frame; `aury_region_exit` frees the whole frame in
+// bulk. The lowerer only wraps a region in enter/exit when it is provably
+// escape-free (scalar result, no set/return/break), so a freed frame's
+// allocations are all dead scratch — nothing the caller can still reach.
+#define AURY_ARENA_MAX_DEPTH 256
+typedef struct { void **ptrs; size_t len, cap; } aury_arena_frame;
+static aury_arena_frame aury_arena_stack[AURY_ARENA_MAX_DEPTH];
+static int aury_arena_top = -1;
+static int64_t aury_arena_live = 0;
+
+static void aury_arena_register(void *ptr) {
+    if (aury_arena_top < 0) return; // no active region: process-lifetime
+    aury_arena_frame *frame = &aury_arena_stack[aury_arena_top];
+    if (frame->len == frame->cap) {
+        size_t next = frame->cap ? frame->cap * 2 : 8;
+        void **grown = (void **)realloc(frame->ptrs, next * sizeof(void *));
+        if (grown == NULL) abort();
+        frame->ptrs = grown;
+        frame->cap = next;
+    }
+    frame->ptrs[frame->len++] = ptr;
+    aury_arena_live++;
+}
+
+void aury_region_enter(void) {
+    if (aury_arena_top + 1 >= AURY_ARENA_MAX_DEPTH) abort();
+    aury_arena_top++;
+    aury_arena_stack[aury_arena_top].ptrs = NULL;
+    aury_arena_stack[aury_arena_top].len = 0;
+    aury_arena_stack[aury_arena_top].cap = 0;
+}
+
+void aury_region_exit(void) {
+    if (aury_arena_top < 0) abort();
+    aury_arena_frame *frame = &aury_arena_stack[aury_arena_top];
+    for (size_t i = 0; i < frame->len; i++) {
+        free(frame->ptrs[i]);
+        aury_arena_live--;
+    }
+    free(frame->ptrs);
+    aury_arena_top--;
+}
+
+// Live (region-owned, not-yet-freed) allocation count, for leak accounting.
+int64_t aury_live_allocations(void) { return aury_arena_live; }
+
 static void *checked_calloc(size_t count, size_t size) {
     if (size != 0 && count > SIZE_MAX / size) abort();
     void *value = calloc(count == 0 ? 1 : count, size == 0 ? 1 : size);
     if (value == NULL) abort();
+    aury_arena_register(value);
     return value;
 }
 
