@@ -33,6 +33,17 @@ pub struct Lowerer {
     retty: String,
     errors: Vec<String>,
     str_literals: Vec<(String, String, String)>, // data name, boxed name, value
+    /// Stack of enclosing loops (innermost last): the exit label to branch to
+    /// on `break`, the result slot to store the break value into (empty when
+    /// the loop has no break), and that slot's LLVM type.
+    loop_stack: Vec<LoopFrame>,
+}
+
+#[derive(Clone)]
+struct LoopFrame {
+    exit_lbl: String,
+    result_slot: Option<String>,
+    result_llvm_ty: String,
 }
 
 /// LLVM type string for an Aury type. Aggregates are boxed pointers.
@@ -178,6 +189,7 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
         retty: String::new(),
         errors: Vec::new(),
         str_literals: Vec::new(),
+        loop_stack: Vec::new(),
     };
     for item in &module.items {
         match item {
@@ -527,6 +539,8 @@ impl Lowerer {
             Expr::If { cond, then, els, .. } => self.lower_if(cond, then, els),
             Expr::Match { scrut, arms, .. } => self.lower_match(scrut, arms),
             Expr::Loop { body, .. } => self.lower_loop(body),
+            Expr::Break { value, .. } => self.lower_break(value),
+            Expr::Set { name, value, .. } => self.lower_set(name, value),
             Expr::Return { value, .. } => {
                 let (v, vty, div) = self.lower_expr(value);
                 if div {
@@ -1127,15 +1141,76 @@ impl Lowerer {
     }
 
     fn lower_loop(&mut self, body: &Expr) -> (Option<String>, String, bool) {
+        // A loop with a reachable `break` yields the break value via a result
+        // slot; the exit block loads it. A loop with no break diverges, exactly
+        // as before.
+        let has_break = Self::loop_body_has_break(body);
+        let (result_slot, result_llvm_ty) = if has_break {
+            let env: Vec<(String, Type)> =
+                self.scope.iter().map(|(n, _, t)| (n.clone(), t.clone())).collect();
+            let result_ty = self.loop_result_type(body, &env);
+            let llvm_ty = llvm_type(&result_ty);
+            let slot = self.slot("loopres", &llvm_ty);
+            (Some(slot), llvm_ty)
+        } else {
+            (None, String::new())
+        };
         let loop_lbl = self.fresh_lbl("loop");
+        let exit_lbl = self.fresh_lbl("loopexit");
+        self.loop_stack.push(LoopFrame {
+            exit_lbl: exit_lbl.clone(),
+            result_slot: result_slot.clone(),
+            result_llvm_ty: result_llvm_ty.clone(),
+        });
         self.out_str(&format!("  br label %{}\n", loop_lbl));
         self.out_str(&format!("{}:\n", loop_lbl));
         let (_, _, div) = self.lower_expr(body);
+        if !div {
+            // A normal iteration falls through to the back-edge.
+            self.out_str(&format!("  br label %{}\n", loop_lbl));
+        }
+        self.loop_stack.pop();
+        if let Some(slot) = result_slot {
+            // Reached only via `break`, which stored into the result slot and
+            // branched here.
+            self.out_str(&format!("{}:\n", exit_lbl));
+            let r = self.fresh();
+            self.out_str(&format!("  {} = load {}, ptr {}\n", r, result_llvm_ty, slot));
+            (Some(r), result_llvm_ty, false)
+        } else {
+            // No break: the loop diverges.
+            (None, String::new(), true)
+        }
+    }
+
+    fn lower_break(&mut self, value: &Expr) -> (Option<String>, String, bool) {
+        let (v, vty, div) = self.lower_expr(value);
         if div {
             return (None, String::new(), true);
         }
-        self.out_str(&format!("  br label %{}\n", loop_lbl));
+        let frame = match self.loop_stack.last() {
+            Some(f) => f.clone(),
+            None => {
+                self.err("break outside of loop in native lowering");
+                return (None, String::new(), true);
+            }
+        };
+        if let Some(slot) = &frame.result_slot {
+            self.out_str(&format!("  store {} {}, ptr {}\n", vty, v.unwrap(), slot));
+        }
+        self.out_str(&format!("  br label %{}\n", frame.exit_lbl));
         (None, String::new(), true)
+    }
+
+    fn lower_set(&mut self, name: &str, value: &Expr) -> (Option<String>, String, bool) {
+        let (v, vty, div) = self.lower_expr(value);
+        if div {
+            return (None, String::new(), true);
+        }
+        let (slot, _ty) = self.lookup(name);
+        self.out_str(&format!("  store {} {}, ptr {}\n", vty, v.unwrap(), slot));
+        // `set` yields unit, represented as i64 0.
+        (Some("0".into()), "i64".into(), false)
     }
 
     fn lookup(&mut self, name: &str) -> (String, Type) {
@@ -1196,7 +1271,9 @@ impl Lowerer {
                     })
                     .unwrap_or(Type::Unit)
             }
-            Expr::Loop { .. } | Expr::Return { .. } => Type::Unit,
+            Expr::Loop { body, .. } => self.loop_result_type(body, env),
+            Expr::Return { .. } | Expr::Break { .. } => Type::Unit,
+            Expr::Set { .. } => Type::Unit,
             Expr::Block { tail, .. } => self.infer_env(tail, env),
             Expr::Region { body, .. } => self.infer_env(body, env),
             Expr::Copy { value, .. } => self.infer_env(value, env),
@@ -1239,7 +1316,9 @@ impl Lowerer {
     /// expression's normal result type.
     fn expr_diverges(expr: &Expr) -> bool {
         match expr {
-            Expr::Return { .. } | Expr::Loop { .. } => true,
+            Expr::Return { .. } | Expr::Break { .. } => true,
+            Expr::Loop { body, .. } => !Self::loop_body_has_break(body),
+            Expr::Set { value, .. } => Self::expr_diverges(value),
             Expr::Let { init, body, .. } => {
                 Self::expr_diverges(init) || Self::expr_diverges(body)
             }
@@ -1271,6 +1350,90 @@ impl Lowerer {
                 fields.iter().any(|(_, value)| Self::expr_diverges(value))
             }
             Expr::Lit { .. } | Expr::Ref { .. } => false,
+        }
+    }
+
+    /// Does a loop body contain a `break` targeting the immediately enclosing
+    /// loop? Mirrors the validator's `loop_has_break`: descends through control
+    /// flow but stops at nested `loop`s.
+    fn loop_body_has_break(expr: &Expr) -> bool {
+        match expr {
+            Expr::Break { .. } => true,
+            Expr::Loop { .. } => false,
+            Expr::Let { init, body, .. } => {
+                Self::loop_body_has_break(init) || Self::loop_body_has_break(body)
+            }
+            Expr::Set { value, .. } => Self::loop_body_has_break(value),
+            Expr::Call { args, .. } => args.iter().any(Self::loop_body_has_break),
+            Expr::If { cond, then, els, .. } => {
+                Self::loop_body_has_break(cond)
+                    || Self::loop_body_has_break(then)
+                    || Self::loop_body_has_break(els)
+            }
+            Expr::Match { scrut, arms, .. } => {
+                Self::loop_body_has_break(scrut)
+                    || arms.iter().any(|arm| Self::loop_body_has_break(&arm.body))
+            }
+            Expr::Block { stmts, tail, .. } => {
+                stmts.iter().any(Self::loop_body_has_break) || Self::loop_body_has_break(tail)
+            }
+            Expr::Region { body, .. } => Self::loop_body_has_break(body),
+            Expr::Return { value, .. } => Self::loop_body_has_break(value),
+            Expr::Copy { value, .. } | Expr::Cast { value, .. } => Self::loop_body_has_break(value),
+            Expr::VecNew { elems, .. } => elems.iter().any(Self::loop_body_has_break),
+            Expr::Index { target, index, .. } => {
+                Self::loop_body_has_break(target) || Self::loop_body_has_break(index)
+            }
+            Expr::Len { target, .. } | Expr::Field { target, .. } => Self::loop_body_has_break(target),
+            Expr::StructNew { fields, .. } => {
+                fields.iter().any(|(_, value)| Self::loop_body_has_break(value))
+            }
+            Expr::Lit { .. } | Expr::Ref { .. } => false,
+        }
+    }
+
+    /// The Aury type a loop yields: the type of its `break` values (mirrors the
+    /// validator). Unit if the loop has no break (it diverges).
+    fn loop_result_type(&self, body: &Expr, env: &[(String, Type)]) -> Type {
+        self.first_break_type(body, env).unwrap_or(Type::Unit)
+    }
+
+    fn first_break_type(&self, expr: &Expr, env: &[(String, Type)]) -> Option<Type> {
+        match expr {
+            Expr::Break { value, .. } => Some(self.infer_env(value, env)),
+            Expr::Loop { .. } => None,
+            Expr::Let { name, ty, init, body, .. } => {
+                self.first_break_type(init, env).or_else(|| {
+                    let mut e2 = env.to_vec();
+                    e2.push((name.clone(), ty.clone()));
+                    self.first_break_type(body, &e2)
+                })
+            }
+            Expr::Set { value, .. } => self.first_break_type(value, env),
+            Expr::Call { args, .. } => args.iter().find_map(|a| self.first_break_type(a, env)),
+            Expr::If { cond, then, els, .. } => self
+                .first_break_type(cond, env)
+                .or_else(|| self.first_break_type(then, env))
+                .or_else(|| self.first_break_type(els, env)),
+            Expr::Match { scrut, arms, .. } => self
+                .first_break_type(scrut, env)
+                .or_else(|| arms.iter().find_map(|arm| self.first_break_type(&arm.body, env))),
+            Expr::Block { stmts, tail, .. } => stmts
+                .iter()
+                .find_map(|s| self.first_break_type(s, env))
+                .or_else(|| self.first_break_type(tail, env)),
+            Expr::Region { body, .. } => self.first_break_type(body, env),
+            Expr::Return { value, .. } => self.first_break_type(value, env),
+            Expr::Copy { value, .. } | Expr::Cast { value, .. } => self.first_break_type(value, env),
+            Expr::VecNew { elems, .. } => elems.iter().find_map(|e| self.first_break_type(e, env)),
+            Expr::Index { target, index, .. } => self
+                .first_break_type(target, env)
+                .or_else(|| self.first_break_type(index, env)),
+            Expr::Len { target, .. } | Expr::Field { target, .. } => self.first_break_type(target, env),
+            Expr::StructNew { fields, .. } => {
+                fields.iter().find_map(|(_, v)| self.first_break_type(v, env))
+            }
+            Expr::Lit { .. } | Expr::Ref { .. } => None,
         }
     }
 

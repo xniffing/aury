@@ -350,6 +350,8 @@ fn expr_mentions(e: &Expr, name: &str) -> bool {
             expr_mentions(scrut, name) || arms.iter().any(|a| expr_mentions(&a.body, name))
         }
         Expr::Loop { body, .. } => expr_mentions(body, name),
+        Expr::Break { value, .. } => expr_mentions(value, name),
+        Expr::Set { name: n, value, .. } => n == name || expr_mentions(value, name),
         Expr::Return { value, .. } => expr_mentions(value, name),
         Expr::Block { stmts, tail, .. } => {
             stmts.iter().any(|s| expr_mentions(s, name)) || expr_mentions(tail, name)
@@ -388,6 +390,8 @@ fn body_references_user_fn(e: &Expr, fns: &std::collections::HashSet<String>) ->
                 || arms.iter().any(|a| body_references_user_fn(&a.body, fns))
         }
         Expr::Loop { body, .. } => body_references_user_fn(body, fns),
+        Expr::Break { value, .. } => body_references_user_fn(value, fns),
+        Expr::Set { value, .. } => body_references_user_fn(value, fns),
         Expr::Return { value, .. } => body_references_user_fn(value, fns),
         Expr::Block { stmts, tail, .. } => {
             stmts.iter().any(|s| body_references_user_fn(s, fns))

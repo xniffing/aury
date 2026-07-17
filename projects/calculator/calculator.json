@@ -1303,76 +1303,6 @@
     },
     {
       "kind": "fn",
-      "name": "factorial_iter",
-      "params": [
-        {
-          "name": "n",
-          "type": "i64"
-        },
-        {
-          "name": "acc",
-          "type": "i64"
-        }
-      ],
-      "ret": "i64",
-      "body": {
-        "kind": "if",
-        "cond": {
-          "kind": "call",
-          "op": "i64.le",
-          "args": [
-            {
-              "kind": "ref",
-              "name": "n"
-            },
-            {
-              "kind": "lit",
-              "value": 1
-            }
-          ]
-        },
-        "then": {
-          "kind": "ref",
-          "name": "acc"
-        },
-        "else": {
-          "kind": "call",
-          "op": "factorial_iter",
-          "args": [
-            {
-              "kind": "call",
-              "op": "i64.sub",
-              "args": [
-                {
-                  "kind": "ref",
-                  "name": "n"
-                },
-                {
-                  "kind": "lit",
-                  "value": 1
-                }
-              ]
-            },
-            {
-              "kind": "call",
-              "op": "i64.mul",
-              "args": [
-                {
-                  "kind": "ref",
-                  "name": "acc"
-                },
-                {
-                  "kind": "ref",
-                  "name": "n"
-                }
-              ]
-            }
-          ]
-        }
-      }
-    },
-    {
-      "kind": "fn",
       "name": "factorial",
       "params": [
         {
@@ -1422,18 +1352,94 @@
             "value": 0
           },
           "else": {
-            "kind": "call",
-            "op": "factorial_iter",
-            "args": [
-              {
+            "kind": "let",
+            "name": "acc",
+            "type": "i64",
+            "init": {
+              "kind": "lit",
+              "value": 1
+            },
+            "body": {
+              "kind": "let",
+              "name": "i",
+              "type": "i64",
+              "init": {
                 "kind": "ref",
                 "name": "n"
               },
-              {
-                "kind": "lit",
-                "value": 1
+              "body": {
+                "kind": "loop",
+                "body": {
+                  "kind": "if",
+                  "cond": {
+                    "kind": "call",
+                    "op": "i64.le",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "i"
+                      },
+                      {
+                        "kind": "lit",
+                        "value": 1
+                      }
+                    ]
+                  },
+                  "then": {
+                    "kind": "break",
+                    "value": {
+                      "kind": "ref",
+                      "name": "acc"
+                    }
+                  },
+                  "else": {
+                    "kind": "block",
+                    "stmts": [
+                      {
+                        "kind": "set",
+                        "name": "acc",
+                        "value": {
+                          "kind": "call",
+                          "op": "i64.mul",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "acc"
+                            },
+                            {
+                              "kind": "ref",
+                              "name": "i"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "kind": "set",
+                        "name": "i",
+                        "value": {
+                          "kind": "call",
+                          "op": "i64.sub",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "i"
+                            },
+                            {
+                              "kind": "lit",
+                              "value": 1
+                            }
+                          ]
+                        }
+                      }
+                    ],
+                    "tail": {
+                      "kind": "lit",
+                      "value": null
+                    }
+                  }
+                }
               }
-            ]
+            }
           }
         }
       }

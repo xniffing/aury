@@ -122,6 +122,7 @@ algorithms, transformations, and small tools.
 | Counterexample shrinking | Implemented |
 | Structural vacuity detection | Implemented |
 | Executable function contracts (`requires`/`ensures`) | Implemented (runtime + intent gate) |
+| Mutable loops (`set` / `loop` / `break`) | Implemented (interp + native parity) |
 | Tree-walking interpreter | Implemented |
 | Static, type-aware LLVM lowering | Implemented |
 | Native vectors, structs, results, strings, and RNG | Implemented |
@@ -207,6 +208,8 @@ region
 (match value (pattern arm) ...)
 (block statement ... tail)
 (loop body)
+(break value)
+(set name value)
 (return value)
 (vec-new (vec i64) ...)
 (idx vector index)
@@ -242,6 +245,41 @@ Aury semantics are defined before LLVM lowering:
 
 These rules prevent LLVM undefined behavior from silently becoming Aury
 language behavior.
+
+### Mutable loops
+
+Iteration is expressed with a mutable accumulator rather than only recursion. A
+`let` binding is reassigned with `(set name value)`, and `(break value)` exits
+the nearest enclosing `loop`, making the loop expression evaluate to that value
+(a loop with no reachable `break` diverges, as before). Iterative factorial:
+
+```scheme
+(fn factorial (params (n i64)) (ret i64)
+  (body
+    (let acc i64 1
+      (let i i64 1
+        (loop
+          (if (call i64.gt (ref i) (ref n))
+              (break (ref acc))
+              (block
+                (set acc (call i64.mul (ref acc) (ref i)))
+                (set i   (call i64.add (ref i) (lit 1)))
+                unit)))))))
+```
+
+Each construct is also a repair opportunity, checked with no inference:
+
+- `set` of a parameter is rejected (`SET_OF_PARAM`) — parameters are values;
+  reassign a `let`-bound local instead;
+- `set` of an unbound name (`SET_UNBOUND`) or a value whose type disagrees with
+  the binding (`SET_TYPE_MISMATCH`);
+- `break` outside any loop (`BREAK_OUTSIDE_LOOP`), or two `break`s in one loop
+  whose value types disagree (`BREAK_TYPE_MISMATCH`).
+
+The interpreter defines the semantics and the native and wasm backends must
+match it observably; an iterative accumulator runs identically across all three
+(differential parity is a test failure, not a warning). The calculator example's
+`factorial` is written this way as a demonstration.
 
 ---
 

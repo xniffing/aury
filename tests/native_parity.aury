@@ -59,4 +59,54 @@
     (body (call i64.abs (lit -9223372036854775808))))
   (fn nested-return (params) (ret i64)
     (body (block (return (lit 9)) (lit 100))))
+  ; --- Track 2: mutable loops / accumulators ---
+  ; iterative factorial: mutable accumulator + counter, exit via (break acc)
+  (fn loop-fact (params (n i64)) (ret i64)
+    (body
+      (let acc i64 1
+        (let i i64 1
+          (loop
+            (if (call i64.gt (ref i) (ref n))
+                (break (ref acc))
+                (block
+                  (set acc (call i64.mul (ref acc) (ref i)))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; iterative countdown sum 1..n
+  (fn loop-sum (params (n i64)) (ret i64)
+    (body
+      (let acc i64 0
+        (let i i64 (ref n)
+          (loop
+            (if (call i64.le (ref i) (lit 0))
+                (break (ref acc))
+                (block
+                  (set acc (call i64.add (ref acc) (ref i)))
+                  (set i (call i64.sub (ref i) (lit 1)))
+                  unit)))))))
+  ; nested loops: sum over the i*j multiplication table up to n (inner
+  ; loop breaks with unit, exercising a value-less break + carried state)
+  (fn loop-table (params (n i64)) (ret i64)
+    (body
+      (let total i64 0
+        (let i i64 1
+          (loop
+            (if (call i64.gt (ref i) (ref n))
+                (break (ref total))
+                (block
+                  (let j i64 1
+                    (loop
+                      (if (call i64.gt (ref j) (ref n))
+                          (break unit)
+                          (block
+                            (set total (call i64.add (ref total) (call i64.mul (ref i) (ref j))))
+                            (set j (call i64.add (ref j) (lit 1)))
+                            unit))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit)))))))
+  ; loop that breaks immediately on the first iteration (edge: acc untouched)
+  (fn loop-empty (params (n i64)) (ret i64)
+    (body
+      (let acc i64 42
+        (loop (break (ref acc))))))
 )

@@ -19,9 +19,11 @@ calculator.json ──▶ (aury loop) ──▶ calculator.repaired.aury
 
 `calculator.json` is the authoring surface — the skill's typed-object JSON AST,
 edited directly (not generated). `aury loop` auto-applies any repairs to it.
-Aury v0 has no mutable loops, so every iterative function is expressed as
-**recursion**; the `*_iter` / `*_check` helpers are internal and are not
-exported.
+Most iterative functions are expressed as **recursion** with `*_iter` /
+`*_check` accumulator helpers (internal, not exported). `factorial` is the
+exception: as of Track 2 (mutable loops) it is written with a mutable
+accumulator and a `loop` / `break` — no helper — demonstrating the new form
+while keeping the exact same exported `(i64) -> i64` behavior.
 
 | Kind | Functions |
 |------|-----------|
@@ -30,8 +32,8 @@ exported.
 | Predicate `(i64)->bool` | `is_even` `is_prime` |
 
 `divide`/`modulo` are guarded against divide-by-zero (return `0`) so the module
-never traps. `factorial`/`fibonacci`/`power` are bounded to keep recursion
-shallow and within `i64` range.
+never traps. `factorial`/`fibonacci`/`power` are bounded to stay within `i64`
+range (and, for the recursion-based ones, to keep recursion shallow).
 
 The `spec` block carries **8 properties** (commutativity, add/sub inverse,
 negate involution, gcd divides both, …) that Aury property-tests during

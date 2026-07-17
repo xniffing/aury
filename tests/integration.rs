@@ -421,6 +421,15 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         ("edge-neg", vec![]),
         ("edge-abs", vec![]),
         ("nested-return", vec![]),
+        // Track 2: mutable loops must match the interpreter across backends.
+        ("loop-fact", vec!["5".into()]),
+        ("loop-fact", vec!["10".into()]),
+        ("loop-fact", vec!["0".into()]),
+        ("loop-sum", vec!["10".into()]),
+        ("loop-sum", vec!["0".into()]),
+        ("loop-table", vec!["3".into()]),
+        ("loop-table", vec!["5".into()]),
+        ("loop-empty", vec!["7".into()]),
     ];
     let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
     for (index, (entry, args)) in cases.into_iter().enumerate() {
@@ -842,4 +851,162 @@ fn contracts_round_trip_through_json_authoring_surface() {
     let back = aury::json::sexpr_to_json(&s);
     let round = aury::json::json_to_sexpr(&back).unwrap();
     assert_eq!(s, round, "contracts must survive the JSON round trip");
+}
+
+// ============================================================
+// Track 2 — mutable loops / accumulators (set + loop + break)
+// ============================================================
+
+/// Load the loop fixtures from the shared native-parity module.
+fn loops_module() -> aury::ast::Module {
+    let src = std::fs::read_to_string("tests/native_parity.aury").unwrap();
+    module(&src)
+}
+
+#[test]
+fn interpreter_runs_iterative_accumulator_loops() {
+    let m = loops_module();
+    assert!(check_module(&m).is_accepted());
+    let mut interp = Interp::new(&m, 0);
+    // iterative factorial
+    assert_eq!(interp.call_fn("loop-fact", vec![i64v(5)]).unwrap(), i64v(120));
+    assert_eq!(interp.call_fn("loop-fact", vec![i64v(10)]).unwrap(), i64v(3628800));
+    // n = 0: the loop breaks on the first test, accumulator stays at 1
+    assert_eq!(interp.call_fn("loop-fact", vec![i64v(0)]).unwrap(), i64v(1));
+    // countdown sum 1..n
+    assert_eq!(interp.call_fn("loop-sum", vec![i64v(10)]).unwrap(), i64v(55));
+    assert_eq!(interp.call_fn("loop-sum", vec![i64v(0)]).unwrap(), i64v(0));
+    // nested loops over the multiplication table: (sum 1..n)^2
+    assert_eq!(interp.call_fn("loop-table", vec![i64v(3)]).unwrap(), i64v(36));
+    assert_eq!(interp.call_fn("loop-table", vec![i64v(5)]).unwrap(), i64v(225));
+    // a loop that breaks immediately yields its seed untouched
+    assert_eq!(interp.call_fn("loop-empty", vec![i64v(7)]).unwrap(), i64v(42));
+}
+
+#[test]
+fn loop_with_break_is_a_value_agreeing_with_return_type() {
+    // A loop whose only exit is `break acc` has type i64 and satisfies the
+    // function's declared return type — no `return` needed.
+    let src = r#"
+(module m
+  (fn count-down (params (n i64)) (ret i64)
+    (body
+      (let i i64 (ref n)
+        (loop
+          (if (call i64.le (ref i) (lit 0))
+              (break (ref i))
+              (set i (call i64.sub (ref i) (lit 1)))))))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted(), "loop-as-value must type-check");
+    let mut interp = Interp::new(&m, 0);
+    assert_eq!(interp.call_fn("count-down", vec![i64v(4)]).unwrap(), i64v(0));
+}
+
+#[test]
+fn set_of_a_parameter_is_rejected() {
+    let src = r#"
+(module m
+  (fn f (params (n i64)) (ret i64)
+    (body (block (set n (lit 5)) (ref n)))))"#;
+    let rejs = match check_module(&module(src)) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected rejection"),
+    };
+    assert_eq!(rejs[0].gate, Gate::Type);
+    assert_eq!(rejs[0].kind, "SET_OF_PARAM");
+}
+
+#[test]
+fn set_of_unbound_name_is_rejected() {
+    let src = r#"
+(module m
+  (fn f (params (n i64)) (ret i64)
+    (body (block (set zzz (lit 1)) (ref n)))))"#;
+    let rejs = match check_module(&module(src)) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected rejection"),
+    };
+    assert!(rejs.iter().any(|r| r.kind == "SET_UNBOUND"));
+}
+
+#[test]
+fn set_type_mismatch_is_rejected_with_repairs() {
+    let src = r#"
+(module m
+  (fn f (params (n i64)) (ret i64)
+    (body (let acc i64 0 (block (set acc true) (ref acc))))))"#;
+    let rejs = match check_module(&module(src)) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected rejection"),
+    };
+    let r = rejs.iter().find(|r| r.kind == "SET_TYPE_MISMATCH").expect("SET_TYPE_MISMATCH");
+    assert_eq!(r.gate, Gate::Type);
+    assert!(r.expected.contains("i64"), "expected shows the binding type, got {:?}", r.expected);
+    assert!(r.received.contains("bool"), "received shows the value type, got {:?}", r.received);
+}
+
+#[test]
+fn break_outside_loop_is_rejected() {
+    let src = r#"
+(module m
+  (fn f (params (n i64)) (ret i64)
+    (body (break (lit 5)))))"#;
+    let rejs = match check_module(&module(src)) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected rejection"),
+    };
+    assert!(rejs.iter().any(|r| r.kind == "BREAK_OUTSIDE_LOOP"));
+}
+
+#[test]
+fn break_value_types_must_agree() {
+    let src = r#"
+(module m
+  (fn f (params (n i64)) (ret i64)
+    (body (loop (if (call i64.gt (ref n) (lit 0)) (break (lit 1)) (break true))))))"#;
+    let rejs = match check_module(&module(src)) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected rejection"),
+    };
+    assert!(rejs.iter().any(|r| r.kind == "BREAK_TYPE_MISMATCH"));
+}
+
+#[test]
+fn set_inside_match_arm_mutates_enclosing_binding() {
+    // Regression guard: match arms bind patterns without cloning the scope, so
+    // a `set` inside an arm updates the loop-carried accumulator — matching
+    // native lowering, where all arms share the same slot.
+    let src = r#"
+(module m
+  (fn f (params (n i64)) (ret i64)
+    (body
+      (let acc i64 0
+        (let i i64 0
+          (loop
+            (if (call i64.ge (ref i) (ref n))
+                (break (ref acc))
+                (block
+                  (match (call i64.mod (ref i) (lit 2))
+                    (0 (set acc (call i64.add (ref acc) (lit 10))))
+                    (_ (set acc (call i64.add (ref acc) (lit 1)))))
+                  (set i (call i64.add (ref i) (lit 1)))
+                  unit))))))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted());
+    let mut interp = Interp::new(&m, 0);
+    // i = 0,1,2,3 -> 10 + 1 + 10 + 1 = 22
+    assert_eq!(interp.call_fn("f", vec![i64v(4)]).unwrap(), i64v(22));
+}
+
+#[test]
+fn set_and_break_survive_the_json_round_trip() {
+    // The typed JSON authoring surface must emit and re-ingest set/break.
+    let json = r#"{"kind":"loop","body":
+      {"kind":"block","stmts":[
+        {"kind":"set","name":"acc","value":{"kind":"lit","value":1}}],
+       "tail":{"kind":"break","value":{"kind":"ref","name":"acc"}}}}"#;
+    let s = aury::json::parse_json_sexpr(json).unwrap();
+    let back = aury::json::sexpr_to_json(&s);
+    let round = aury::json::json_to_sexpr(&back).unwrap();
+    assert_eq!(s, round, "set/break must survive the JSON round trip");
 }
