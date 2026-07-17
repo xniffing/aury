@@ -765,6 +765,14 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         // Track C1b: an arena-managed region (frees scratch) is observably equal.
         ("region-scalar", vec!["5".into()]),
         ("region-scalar", vec!["0".into()]),
+        // Aggressive arena: a loop/accumulator region (inner set+push+break) is
+        // arena-managed with its aggregate result relocated out.
+        ("region-build", vec!["5".into()]),
+        ("region-build", vec!["0".into()]),
+        // Early return of an aggregate out of an arena region (return-unwind).
+        ("region-early", vec!["5".into()]),
+        ("region-early", vec!["0".into()]),
+        ("region-early", vec!["-2".into()]),
     ];
     let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
     for (index, (entry, args)) in cases.into_iter().enumerate() {

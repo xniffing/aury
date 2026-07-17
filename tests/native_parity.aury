@@ -226,4 +226,29 @@
         (call i64.add
           (len (vec-new (vec i64) (ref n) (ref n) (ref n)))
           (ref n)))))
+  ; loop/accumulator region: build a vector with set+vec-push inside a region and
+  ; break it out. Only in-region bindings/loops are touched, so the region is
+  ; arena-managed — every intermediate vector is freed and the result relocated.
+  (fn region-build (params (n i64)) (ret (vec i64))
+    (body
+      (region r
+        (let acc (vec i64) (vec-new (vec i64))
+          (let i i64 0
+            (loop
+              (if (call i64.ge (ref i) (ref n))
+                  (break (ref acc))
+                  (block
+                    (set acc (vec-push (ref acc) (call i64.mul (ref i) (ref i))))
+                    (set i (call i64.add (ref i) (lit 1)))
+                    unit))))))))
+  ; early return of an aggregate out of an arena region: the return path unwinds
+  ; the region (relocate + free) just like the normal tail does.
+  (fn region-early (params (n i64)) (ret (vec i64))
+    (body
+      (region r
+        (block
+          (if (call i64.gt (ref n) (lit 0))
+              (return (vec-new (vec i64) (ref n) (ref n)))
+              unit)
+          (vec-new (vec i64) (lit 0))))))
 )
