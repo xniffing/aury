@@ -33,6 +33,9 @@ pub struct Lowerer {
     retty: String,
     errors: Vec<String>,
     str_literals: Vec<(String, String, String)>, // data name, boxed name, value
+    /// Buffered region result descriptors: (global name, descriptor bytes),
+    /// emitted as private C-string constants after the function bodies.
+    desc_literals: Vec<(String, String)>,
     /// Stack of enclosing loops (innermost last): the exit label to branch to
     /// on `break`, the result slot to store the break value into (empty when
     /// the loop has no break), and that slot's LLVM type.
@@ -55,12 +58,6 @@ fn llvm_type(t: &Type) -> String {
             "ptr".into()
         }
     }
-}
-
-/// A scalar type holds no pointer, so a region returning one lets its arena be
-/// freed with nothing left reachable by the caller.
-fn is_scalar_type(t: &Type) -> bool {
-    matches!(t, Type::I64 | Type::F64 | Type::Bool | Type::Unit)
 }
 
 /// Escape bytes for an LLVM `c"..."` constant and append its NUL terminator.
@@ -196,6 +193,7 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
         retty: String::new(),
         errors: Vec::new(),
         str_literals: Vec::new(),
+        desc_literals: Vec::new(),
         loop_stack: Vec::new(),
     };
     for item in &module.items {
@@ -230,6 +228,7 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out_str("declare ptr @aury_vec_push(ptr, i64)\n");
     l.out_str("declare void @aury_region_enter()\n");
     l.out_str("declare void @aury_region_exit()\n");
+    l.out_str("declare i64 @aury_region_exit_keep(i64, ptr)\n");
     l.out_str("declare void @aury_rng_init(i64)\n");
     l.out_str("declare i64 @aury_rng_next()\n");
     l.out_str("declare i64 @aury_i64_div(i64, i64)\n");
@@ -275,6 +274,14 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     // so flush all buffered literals after the lowered functions.
     for (data_name, boxed_name, value) in std::mem::take(&mut l.str_literals) {
         emit_string_global(&mut l.out, &data_name, &boxed_name, &value);
+    }
+    for (name, descriptor) in std::mem::take(&mut l.desc_literals) {
+        l.out.push_str(&format!(
+            "{} = private constant [{} x i8] c\"{}\"\n",
+            name,
+            descriptor.len() + 1,
+            llvm_c_string(&descriptor)
+        ));
     }
     Ok(l.out)
 }
@@ -587,19 +594,34 @@ impl Lowerer {
                 }
                 self.lower_expr(tail)
             }
-            // A region becomes a real arena when it is provably escape-free: a
-            // scalar result (holds no pointer) and no set/return/break in the
-            // body (so the normal tail exit always runs and nothing leaks out to
-            // an outer binding). Then every allocation inside is dead scratch and
-            // is bulk-freed at exit. Otherwise the region stays a pass-through.
+            // A region becomes a real arena when it is provably escape-free: no
+            // set/return/break in the body (so the normal tail exit always runs
+            // and nothing leaks to an outer binding via a set or a jump). Then
+            // every allocation inside is dead scratch except the result, which is
+            // deep-copied out into the parent frame before the region's own frame
+            // is bulk-freed — so even an aggregate result is safe. A body whose
+            // result type has no descriptor (a reference) or that diverges stays a
+            // pass-through.
             Expr::Region { body, .. } => {
-                if is_scalar_type(&self.infer_type(body)) && !Self::region_escapes(body) {
+                let body_ty = self.infer_type(body);
+                let descriptor = self.type_descriptor_self(&body_ty);
+                if Self::region_escapes(body) || Self::expr_diverges(body) || descriptor.is_err() {
+                    self.lower_expr(body)
+                } else {
+                    let desc_name = self.descriptor_global(&descriptor.unwrap());
                     self.out_str("  call void @aury_region_enter()\n");
                     let (value, ty, diverged) = self.lower_expr(body);
-                    self.out_str("  call void @aury_region_exit()\n");
-                    (value, ty, diverged)
-                } else {
-                    self.lower_expr(body)
+                    if diverged {
+                        return (value, ty, diverged);
+                    }
+                    let bits = self.value_to_bits(value.unwrap(), &ty);
+                    let relocated = self.fresh();
+                    self.out_str(&format!(
+                        "  {} = call i64 @aury_region_exit_keep(i64 {}, ptr {})\n",
+                        relocated, bits, desc_name
+                    ));
+                    let (val, llvm_ty) = self.bits_to_value(relocated, &body_ty);
+                    (Some(val), llvm_ty, false)
                 }
             }
             Expr::Copy { value, .. } => self.lower_expr(value),
@@ -611,6 +633,57 @@ impl Lowerer {
             Expr::StructNew { name, fields, .. } => self.lower_struct_new(name, fields),
             Expr::Field { target, field, .. } => self.lower_field(target, field),
         }
+    }
+
+    /// Buffer a region result descriptor as a private C-string global and return
+    /// its name, for passing to `aury_region_exit_keep`.
+    fn descriptor_global(&mut self, descriptor: &str) -> String {
+        let name = format!("@.desc{}", self.desc_literals.len());
+        self.desc_literals.push((name.clone(), descriptor.to_string()));
+        name
+    }
+
+    /// Build the runtime value descriptor for `ty` from the lowerer's own struct
+    /// table (the module-free analogue of [`type_descriptor`]).
+    fn type_descriptor_self(&self, ty: &Type) -> Result<String, String> {
+        fn build(
+            structs: &HashMap<String, StructDef>,
+            ty: &Type,
+            active: &mut HashSet<String>,
+        ) -> Result<String, String> {
+            Ok(match ty {
+                Type::I64 => "i".into(),
+                Type::F64 => "f".into(),
+                Type::Bool => "b".into(),
+                Type::Str => "s".into(),
+                Type::Unit => "u".into(),
+                Type::Vec(inner) => format!("v{}", build(structs, inner, active)?),
+                Type::Result(ok, err) => {
+                    format!("r{}{}", build(structs, ok, active)?, build(structs, err, active)?)
+                }
+                Type::Struct(name) => {
+                    if !active.insert(name.clone()) {
+                        return Err(format!("recursive struct `{}`", name));
+                    }
+                    let def = structs.get(name).ok_or_else(|| format!("unknown struct `{}`", name))?;
+                    let mut result = format!("t{}:{}{}:", name.len(), name, def.fields.len());
+                    for (field, field_ty) in &def.fields {
+                        result.push_str(&format!(
+                            "{}:{}{}",
+                            field.len(),
+                            field,
+                            build(structs, field_ty, active)?
+                        ));
+                    }
+                    active.remove(name);
+                    result
+                }
+                Type::Ref { .. } | Type::Region => {
+                    return Err(format!("value of type {:?} has no descriptor", ty))
+                }
+            })
+        }
+        build(&self.structs, ty, &mut HashSet::new())
     }
 
     /// Buffer a boxed string literal for module-level emission and return its

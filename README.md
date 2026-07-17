@@ -796,14 +796,18 @@ also enforced (`vec-push` consumes its target; a later use is `USE_AFTER_MOVE`,
 repaired by inserting a copy).
 
 Regions are a **real arena** when the native backend can prove them escape-free —
-a scalar result and no `set`/`return`/`break` in the body — in which case every
-allocation made inside is bulk-freed at region exit (verified by allocation
-accounting; the observable result is unchanged, so interpreter, native, and wasm
-still agree). Regions that could let an aggregate escape (an aggregate result, or
-control flow leaving the region) conservatively fall back to process-lifetime
-allocation. Unconditional freeing with a static `REGION_ESCAPE` check, and
-result-relocation for escaping aggregates, are not yet implemented; `copy`
-remains an immutable-value pass-through.
+no `set`/`return`/`break` in the body, so nothing leaks to an outer binding or
+jumps past the region's exit. Every allocation made inside is then bulk-freed at
+region exit, and the region's **result is deep-copied (relocated) into the parent
+frame first**, so even an *aggregate* result (a vector or struct) survives while
+its scratch is reclaimed. This is verified by allocation accounting and is
+observably transparent: the interpreter, native, and wasm backends produce
+identical values (the interpreter needs no change, since Rust owns its memory).
+Regions that could let a value escape via `set`, `return`, or `break`
+conservatively fall back to process-lifetime allocation. Unconditional freeing
+across those escape paths — exit-path cleanup for early `return`/`break` and a
+static `REGION_ESCAPE` rejection for `set`-escape — is the remaining step; `copy`
+is still an immutable-value pass-through.
 
 ### Contracts and proof
 
