@@ -6,6 +6,7 @@ use std::fmt;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     I64,
+    F64,
     Bool,
     Str,
     Unit,
@@ -28,6 +29,7 @@ impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::I64 => write!(f, "i64"),
+            Type::F64 => write!(f, "f64"),
             Type::Bool => write!(f, "bool"),
             Type::Str => write!(f, "str"),
             Type::Unit => write!(f, "unit"),
@@ -49,6 +51,7 @@ impl Type {
         match s {
             Sexpr::Atom(a) => match a.as_str() {
                 "i64" => Ok(Type::I64),
+                "f64" => Ok(Type::F64),
                 "bool" => Ok(Type::Bool),
                 "str" => Ok(Type::Str),
                 "unit" => Ok(Type::Unit),

@@ -109,4 +109,39 @@
     (body
       (let acc i64 42
         (loop (break (ref acc))))))
+  ; --- Track 3: f64 floats ---
+  ; basic IEEE arithmetic and a returned scalar double
+  (fn f-poly (params (x f64)) (ret f64)
+    (body (call f64.add
+      (call f64.mul (ref x) (call f64.add (ref x) 1.5))
+      (call f64.neg 2.25))))
+  (fn f-abs (params (x f64)) (ret f64) (body (call f64.abs (ref x))))
+  ; div-by-zero is IEEE: never traps — returns +inf / -inf / NaN
+  (fn f-inf (params) (ret f64) (body (call f64.div 1.0 0.0)))
+  (fn f-ninf (params) (ret f64) (body (call f64.div -1.0 0.0)))
+  (fn f-nan (params) (ret f64) (body (call f64.div 0.0 0.0)))
+  ; NaN compares unequal to everything, including itself
+  (fn f-nan-self-eq (params) (ret bool)
+    (body (let n f64 (call f64.div 0.0 0.0) (call f64.eq (ref n) (ref n)))))
+  (fn f-cmp (params (a f64) (b f64)) (ret bool) (body (call f64.lt (ref a) (ref b))))
+  (fn f-to-str (params (x f64)) (ret str) (body (call f64.to_str (ref x))))
+  ; numeric casts both directions (f->i saturates/truncates toward zero)
+  (fn f-of-i (params (n i64)) (ret f64) (body (cast f64 (ref n))))
+  (fn i-of-f (params (x f64)) (ret i64) (body (cast i64 (ref x))))
+  ; f64 flowing through an aggregate slot (vec) then reduced: mean of a vec
+  (fn f-mean-from (params (xs (vec f64)) (i i64) (acc f64)) (ret f64)
+    (body (if (call i64.ge (ref i) (len (ref xs)))
+      (then (ref acc))
+      (else (call f-mean-from (ref xs)
+        (call i64.add (ref i) (lit 1))
+        (call f64.add (ref acc) (idx (ref xs) (ref i))))))))
+  (fn f-mean (params (xs (vec f64))) (ret f64)
+    (body (call f64.div
+      (call f-mean-from (ref xs) (lit 0) 0.0)
+      (cast f64 (len (ref xs))))))
+  ; f64 as a struct field, round-tripped through boxing
+  (fn f-point-x (params (p (struct FPoint))) (ret f64) (body (get (ref p) x)))
+  (fn f-make-point (params (a f64) (b f64)) (ret (struct FPoint))
+    (body (new-struct FPoint (x (ref a)) (y (ref b)))))
+  (struct FPoint (x f64) (y f64))
 )

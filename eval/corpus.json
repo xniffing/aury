@@ -1,0 +1,70 @@
+{
+  "_comment": "Track 4 evaluation corpus. Each task pairs a natural-language intent with a program (JSON authoring surface or canonical .aury) and optional concrete oracle checks. `aury eval eval/corpus.json` runs the closed repair loop over all tasks and prints a repair-convergence table. Program paths are relative to this manifest. expect_accept:false marks a deliberately-wrong spec whose correct outcome is a rejection.",
+  "seed": "0xC0FFEE",
+  "tasks": [
+    {
+      "name": "gcd",
+      "intent": "Euclid's GCD of two non-negative integers; commutative, and divides both inputs.",
+      "program": "../examples/agent/gcd.json",
+      "checks": [
+        { "fn": "gcd", "args": ["48", "36"], "expect": "12" },
+        { "fn": "gcd", "args": ["17", "5"], "expect": "1" }
+      ]
+    },
+    {
+      "name": "loop-factorial",
+      "intent": "Iterative factorial with a mutable accumulator (Track 2 loops); requires 0<=n<=20, ensures result>=1.",
+      "program": "../examples/agent/loop-factorial.json",
+      "checks": [
+        { "fn": "factorial", "args": ["5"], "expect": "120" },
+        { "fn": "factorial", "args": ["0"], "expect": "1" }
+      ]
+    },
+    {
+      "name": "mean-f64",
+      "intent": "Mean of a non-empty vector of f64 (Track 3 floats + Track 2 loops); guarded against the empty vector.",
+      "program": "../examples/agent/mean-f64.json",
+      "checks": [
+        { "fn": "mean", "args": ["[2.0,4.0,9.0]"], "expect": "5.0000000000000000e+00" }
+      ]
+    },
+    {
+      "name": "parse-classify",
+      "intent": "Parse a string to i64, falling back to a default when it is not a number.",
+      "program": "../examples/agent/parse-classify.json",
+      "checks": [
+        { "fn": "parse-or", "args": ["42", "0"], "expect": "42" },
+        { "fn": "parse-or", "args": ["nope", "7"], "expect": "7" }
+      ]
+    },
+    {
+      "name": "dice-effect",
+      "intent": "Draw a random even integer using the rng effect inside a region (effects + regions).",
+      "program": "../examples/agent/dice.aury"
+    },
+    {
+      "name": "calculator",
+      "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
+      "program": "../projects/calculator/calculator.json",
+      "checks": [
+        { "fn": "factorial", "args": ["5"], "expect": "120" },
+        { "fn": "add", "args": ["3", "4"], "expect": "7" },
+        { "fn": "gcd", "args": ["48", "36"], "expect": "12" }
+      ]
+    },
+    {
+      "name": "unterminated",
+      "intent": "Correct program with a missing closing parenthesis — the loop's parse repair should close it.",
+      "program": "../examples/agent/unterminated.aury",
+      "checks": [
+        { "fn": "add", "args": ["3", "4"], "expect": "7" }
+      ]
+    },
+    {
+      "name": "false-property",
+      "intent": "A DELIBERATELY WRONG spec: claims a+b > a for all i64 (false when b<=0). The loop must correctly refuse to accept.",
+      "program": "../examples/agent/false-property.json",
+      "expect_accept": false
+    }
+  ]
+}

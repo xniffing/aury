@@ -263,7 +263,7 @@ fn shrink_contract(interp: &mut Interp, f: &FnDef, forall: &[(String, Type)], va
 
 fn is_generatable(ty: &Type) -> bool {
     match ty {
-        Type::I64 | Type::Bool | Type::Str => true,
+        Type::I64 | Type::F64 | Type::Bool | Type::Str => true,
         Type::Vec(inner) => is_generatable(inner),
         _ => false,
     }
@@ -500,6 +500,7 @@ fn shrink(
 fn value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::I64(x), Value::I64(y)) => x == y,
+        (Value::F64(x), Value::F64(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Unit, Value::Unit) => true,
@@ -520,6 +521,17 @@ fn shrink_one(v: &Value) -> Vec<Value> {
                 // left counterexamples non-minimal, e.g. -2 instead of -1).
                 cs.push(Value::I64(n / 2));
                 cs.push(Value::I64(n - n.signum()));
+            }
+            cs
+        }
+        Value::F64(x) => {
+            // Shrink strictly toward 0.0 so counterexamples are minimal in
+            // magnitude (mirrors the i64 shrink discipline). NaN/inf collapse
+            // straight to 0.0.
+            let mut cs = vec![Value::F64(0.0)];
+            if x.is_finite() && *x != 0.0 {
+                cs.push(Value::F64(x / 2.0));
+                cs.push(Value::F64(x.trunc()));
             }
             cs
         }
@@ -616,6 +628,7 @@ pub fn failure_to_rejection(f: &PropertyFailure) -> Rejection {
 fn show_value(v: &Value) -> String {
     match v {
         Value::I64(n) => format!("{}i64", n),
+        Value::F64(x) => format!("{}f64", crate::interp::format_f64(*x)),
         Value::Bool(b) => format!("{}", b),
         Value::Str(s) => format!("\"{}\"", s),
         Value::Unit => "unit".into(),
@@ -662,6 +675,9 @@ impl Rng {
     fn gen_value(&mut self, t: &Type) -> Value {
         match t {
             Type::I64 => Value::I64((self.next_u64() as i64) % 200 - 100),
+            // Floats in [-100.00, 100.00] at 1/100 granularity — enough spread
+            // for property tests without leaning on subnormals or overflow.
+            Type::F64 => Value::F64(((self.next_u64() % 20001) as f64 - 10000.0) / 100.0),
             Type::Bool => Value::Bool(self.next_u64() % 2 == 0),
             Type::Str => Value::Str(self.next_u64().to_string()),
             Type::Vec(inner) => {

@@ -49,6 +49,7 @@ Types are written as **strings**, using the s-expr type syntax:
 | Type | String | Notes |
 |------|--------|-------|
 | 64-bit int | `"i64"` | the numeric core |
+| 64-bit float | `"f64"` | IEEE-754 double; see `f64.*` builtins |
 | Boolean | `"bool"` | |
 | String | `"str"` | |
 | Unit | `"unit"` | no value |
@@ -117,7 +118,7 @@ never meaningfully exercised is flagged as **vacuous**.
 
 | kind | shape | meaning |
 |------|-------|---------|
-| `lit` | `{"kind":"lit","value": 0 \| true \| "hi"}` | i64 / bool / str literal |
+| `lit` | `{"kind":"lit","value": 0 \| 1.5 \| true \| "hi"}` | i64 / f64 / bool / str literal — a **number with a decimal point is an f64** (`1.5`, `0.0`), without one it is an i64 |
 | `ref` | `{"kind":"ref","name":"a"}` | read a param / let binding |
 | `let` | `{"kind":"let","name":"h","type":"i64","init":<e>,"body":<e>}` | bind then continue |
 | `call` | `{"kind":"call","op":"i64.add","args":[<e>,...]}` | builtin **or** user fn by name |
@@ -135,7 +136,7 @@ never meaningfully exercised is flagged as **vacuous**.
 | `len` | `{"kind":"len","target":<e>}` | vector length → i64 |
 | `new-struct` | `{"kind":"new-struct","name":"Vec2","fields":[{"name":"x","value":<e>}]}` | construct |
 | `get` | `{"kind":"get","target":<e>,"field":"x"}` | read a struct field |
-| `cast` | `{"kind":"cast","type":"i64","value":<e>}` | e.g. parse str→i64 (traps on bad input) |
+| `cast` | `{"kind":"cast","type":"i64","value":<e>}` | str→i64 parse (traps on bad input); `i64`↔`f64` numeric casts; `f64`→`str` formatting |
 
 ### Match patterns (`"pattern"`)
 | kind | shape | matches |
@@ -194,6 +195,24 @@ checked; a mismatch comes back as a rejection with a repair.
 | `i64.neg` `i64.abs` | `(i64) -> i64` |
 | `i64.to_str` | `(i64) -> str` |
 | `i64.from_str` `i64.parse` | `(str) -> (result i64 str)` |
+
+**Float** (`f64`, IEEE-754 — arithmetic **never traps**):
+| op | signature |
+|----|-----------|
+| `f64.add` `f64.sub` `f64.mul` `f64.div` | `(f64, f64) -> f64` |
+| `f64.eq` `f64.neq` `f64.lt` `f64.le` `f64.gt` `f64.ge` | `(f64, f64) -> bool` |
+| `f64.neg` `f64.abs` | `(f64) -> f64` |
+| `f64.to_str` | `(f64) -> str` |
+
+`f64.div` by zero yields `inf` / `-inf` (`0.0/0.0` → `NaN`) — it does **not**
+trap like `i64.div`. Any comparison involving `NaN` is false, except `f64.neq`,
+which is true, so `(f64.eq NaN NaN)` is `false` and `(f64.neq NaN NaN)` is `true`.
+There are no `f64` literals for `inf`/`NaN`: obtain them from arithmetic
+(`(f64.div 1.0 0.0)`, `(f64.div 0.0 0.0)`). Get a `NaN`/`inf` or plain float as a
+string with `f64.to_str`; convert between numbers with `cast` (`(cast f64 <i64>)`,
+`(cast i64 <f64>)` truncates toward zero and saturates, `NaN`→0). Floats print in
+a **canonical 17-significant-digit scientific form** (`1.5` → `1.5000000000000000e+00`)
+that is byte-identical across the interpreter, native, and wasm backends.
 
 **Boolean** (`bool`):
 | op | signature |

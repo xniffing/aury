@@ -50,6 +50,7 @@ struct LoopFrame {
 fn llvm_type(t: &Type) -> String {
     match t {
         Type::I64 | Type::Bool | Type::Unit => "i64".into(),
+        Type::F64 => "double".into(),
         Type::Str | Type::Vec(_) | Type::Struct(_) | Type::Result(_, _) | Type::Ref { .. } | Type::Region => {
             "ptr".into()
         }
@@ -230,6 +231,9 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out_str("declare ptr @aury_i64_to_str(i64)\n");
     l.out_str("declare ptr @aury_i64_parse(ptr)\n");
     l.out_str("declare ptr @aury_i64_parse_strict(ptr)\n");
+    l.out_str("declare ptr @aury_f64_to_str(double)\n");
+    l.out_str("declare i64 @aury_f64_to_i64(double)\n");
+    l.out_str("declare double @llvm.fabs.f64(double)\n");
     l.out_str("declare void @aury_str_print(ptr)\n");
     l.out_str("@.fmt = private constant [6 x i8] c\"%lld\\0A\\00\"\n");
     l.out_str("@.t = private constant [6 x i8] c\"true\\0A\\00\"\n");
@@ -270,6 +274,7 @@ fn type_descriptor(module: &Module, ty: &Type) -> Result<String, String> {
     fn build(module: &Module, ty: &Type, active: &mut HashSet<String>) -> Result<String, String> {
         Ok(match ty {
             Type::I64 => "i".into(),
+            Type::F64 => "f".into(),
             Type::Bool => "b".into(),
             Type::Str => "s".into(),
             Type::Unit => "u".into(),
@@ -322,9 +327,29 @@ fn main_fresh(counter: &mut usize) -> String {
     result
 }
 
+/// Reduce a scalar operand to the i64 word stored in a uniform aggregate slot
+/// (`ptrtoint` for pointers, `bitcast` for doubles, identity otherwise) —
+/// the `emit_main_value` analogue of [`Lowerer::value_to_bits`].
+fn main_slot_bits(operand: String, ty: &Type, body: &mut String, counter: &mut usize) -> String {
+    match llvm_type(ty).as_str() {
+        "ptr" => {
+            let bits = main_fresh(counter);
+            body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, operand));
+            bits
+        }
+        "double" => {
+            let bits = main_fresh(counter);
+            body.push_str(&format!("  {} = bitcast double {} to i64\n", bits, operand));
+            bits
+        }
+        _ => operand,
+    }
+}
+
 fn emit_main_value(module: &Module, value: &Value, ty: &Type, globals: &mut String, body: &mut String, counter: &mut usize) -> Result<String, String> {
     match (ty, value) {
         (Type::I64, Value::I64(number)) => Ok(number.to_string()),
+        (Type::F64, Value::F64(number)) => Ok(format!("0x{:016X}", number.to_bits())),
         (Type::Bool, Value::Bool(boolean)) => Ok(if *boolean { "1" } else { "0" }.into()),
         (Type::Unit, Value::Unit) => Ok("0".into()),
         (Type::Str, Value::Str(string)) => {
@@ -339,10 +364,7 @@ fn emit_main_value(module: &Module, value: &Value, ty: &Type, globals: &mut Stri
             body.push_str(&format!("  {} = call ptr @aury_vec_new(i64 {})\n", vector, values.len()));
             for (index, element) in values.iter().enumerate() {
                 let operand = emit_main_value(module, element, inner, globals, body, counter)?;
-                let bits = if llvm_type(inner) == "ptr" {
-                    let bits = main_fresh(counter);
-                    body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, operand)); bits
-                } else { operand };
+                let bits = main_slot_bits(operand, inner, body, counter);
                 let slot = main_fresh(counter);
                 body.push_str(&format!("  {} = call ptr @aury_vec_slot(ptr {}, i64 {})\n  store i64 {}, ptr {}\n", slot, vector, index, bits, slot));
             }
@@ -358,10 +380,7 @@ fn emit_main_value(module: &Module, value: &Value, ty: &Type, globals: &mut Stri
                 let field_value = fields.iter().find(|(candidate, _)| candidate == field).map(|(_, value)| value)
                     .ok_or_else(|| format!("missing field `{}`", field))?;
                 let operand = emit_main_value(module, field_value, field_ty, globals, body, counter)?;
-                let bits = if llvm_type(field_ty) == "ptr" {
-                    let bits = main_fresh(counter);
-                    body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, operand)); bits
-                } else { operand };
+                let bits = main_slot_bits(operand, field_ty, body, counter);
                 let slot = main_fresh(counter);
                 body.push_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 {})\n  store i64 {}, ptr {}\n", slot, boxed, index, bits, slot));
             }
@@ -376,10 +395,7 @@ fn emit_main_value(module: &Module, value: &Value, ty: &Type, globals: &mut Stri
             let tag_slot = main_fresh(counter);
             body.push_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 0)\n  store i64 {}, ptr {}\n", tag_slot, boxed, if is_ok { 1 } else { 0 }, tag_slot));
             let operand = emit_main_value(module, payload, payload_ty, globals, body, counter)?;
-            let bits = if llvm_type(payload_ty) == "ptr" {
-                let bits = main_fresh(counter);
-                body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, operand)); bits
-            } else { operand };
+            let bits = main_slot_bits(operand, payload_ty, body, counter);
             let payload_slot = main_fresh(counter);
             body.push_str(&format!("  {} = call ptr @aury_box_slot(ptr {}, i64 1)\n  store i64 {}, ptr {}\n", payload_slot, boxed, bits, payload_slot));
             Ok(boxed)
@@ -431,10 +447,10 @@ pub fn lower_program_with_entry(
     ir.push_str(&format!("define i32 @{}() {{\nentry:\n  call void @aury_rng_init(i64 12648430)\n", entry_symbol));
     ir.push_str(&body);
     ir.push_str(&format!("  %r = call {} @aury__{}({})\n", llvm_type(&function.ret), entry_fn, arguments.join(", ")));
-    if llvm_type(&function.ret) == "ptr" {
-        ir.push_str("  %rbits = ptrtoint ptr %r to i64\n  call void @aury_value_print(i64 %rbits, ptr @.return_type)\n");
-    } else {
-        ir.push_str("  call void @aury_value_print(i64 %r, ptr @.return_type)\n");
+    match llvm_type(&function.ret).as_str() {
+        "ptr" => ir.push_str("  %rbits = ptrtoint ptr %r to i64\n  call void @aury_value_print(i64 %rbits, ptr @.return_type)\n"),
+        "double" => ir.push_str("  %rbits = bitcast double %r to i64\n  call void @aury_value_print(i64 %rbits, ptr @.return_type)\n"),
+        _ => ir.push_str("  call void @aury_value_print(i64 %r, ptr @.return_type)\n"),
     }
     ir.push_str("  ret i32 0\n}\n");
     Ok(ir)
@@ -511,6 +527,9 @@ impl Lowerer {
         match e {
             Expr::Lit { value, .. } => match value {
                 Lit::I64(n) => (Some(n.to_string()), "i64".into(), false),
+                // Emit the exact IEEE bit pattern as an LLVM hex `double`
+                // constant, so the literal is identical to the interpreter's.
+                Lit::F64(bits) => (Some(format!("0x{:016X}", bits)), "double".into(), false),
                 Lit::Bool(b) => (Some((if *b { 1 } else { 0 }).to_string()), "i64".into(), false),
                 Lit::Unit => (Some("0".into()), "i64".into(), false),
                 Lit::Str(s) => (Some(self.str_literal(s)), "ptr".into(), false),
@@ -583,21 +602,42 @@ impl Lowerer {
         boxed_name
     }
 
+    /// Reduce a register of `llvm_ty` to the i64 word stored in a uniform
+    /// aggregate slot: pointers via `ptrtoint`, doubles via a `bitcast` of the
+    /// raw IEEE bits, i64/bool/unit unchanged.
     fn value_to_bits(&mut self, value: String, llvm_ty: &str) -> String {
-        if llvm_ty == "ptr" {
-            let bits = self.fresh();
-            self.out_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, value));
-            bits
-        } else { value }
+        match llvm_ty {
+            "ptr" => {
+                let bits = self.fresh();
+                self.out_str(&format!("  {} = ptrtoint ptr {} to i64\n", bits, value));
+                bits
+            }
+            "double" => {
+                let bits = self.fresh();
+                self.out_str(&format!("  {} = bitcast double {} to i64\n", bits, value));
+                bits
+            }
+            _ => value,
+        }
     }
 
+    /// Inverse of [`Self::value_to_bits`]: reconstitute a typed register from an
+    /// i64 slot word.
     fn bits_to_value(&mut self, bits: String, ty: &Type) -> (String, String) {
         let llvm_ty = llvm_type(ty);
-        if llvm_ty == "ptr" {
-            let value = self.fresh();
-            self.out_str(&format!("  {} = inttoptr i64 {} to ptr\n", value, bits));
-            (value, llvm_ty)
-        } else { (bits, llvm_ty) }
+        match llvm_ty.as_str() {
+            "ptr" => {
+                let value = self.fresh();
+                self.out_str(&format!("  {} = inttoptr i64 {} to ptr\n", value, bits));
+                (value, llvm_ty)
+            }
+            "double" => {
+                let value = self.fresh();
+                self.out_str(&format!("  {} = bitcast i64 {} to double\n", value, bits));
+                (value, llvm_ty)
+            }
+            _ => (bits, llvm_ty),
+        }
     }
 
     fn lower_vec_new(&mut self, ty: &Type, elems: &[Expr]) -> (Option<String>, String, bool) {
@@ -716,6 +756,29 @@ impl Lowerer {
         }
     }
 
+    /// Lower two `double` operands for a binary f64 builtin, left-to-right.
+    /// `None` means wrong arity (caller falls through to the unknown-builtin
+    /// path); `Some(Err(()))` means an operand diverged (e.g. a `return` inside
+    /// it) and the caller must report a successfully-lowered divergent call;
+    /// `Some(Ok((a, b)))` is the operand pair.
+    fn lower_f64_pair(&mut self, op: &str, args: &[Expr]) -> Option<Result<(String, String), ()>> {
+        if args.len() != 2 {
+            return None;
+        }
+        let (a, aty, da) = self.lower_expr(&args[0]);
+        if da {
+            return Some(Err(()));
+        }
+        let (b, bty, db) = self.lower_expr(&args[1]);
+        if db {
+            return Some(Err(()));
+        }
+        if aty != "double" || bty != "double" {
+            self.err(&format!("`{}` needs f64 args", op));
+        }
+        Some(Ok((a.unwrap(), b.unwrap())))
+    }
+
     fn lower_builtin(&mut self, op: &str, args: &[Expr]) -> Option<(Option<String>, String, bool)> {
         let is_binary_scalar = matches!(
             op,
@@ -829,6 +892,68 @@ impl Lowerer {
                 self.out_str(&format!("  {} = zext i1 {} to i64\n", r, c));
                 Some((Some(r), "i64".into(), false))
             }
+            // ---- f64 builtins ----
+            // IEEE arithmetic; `fdiv` never traps (±inf / NaN on zero divisor),
+            // matching the interpreter.
+            "f64.add" | "f64.sub" | "f64.mul" | "f64.div" => {
+                let (a, b) = match self.lower_f64_pair(op, args)? {
+                    Ok(pair) => pair,
+                    Err(()) => return Some((None, String::new(), true)),
+                };
+                let k = match op {
+                    "f64.add" => "fadd",
+                    "f64.sub" => "fsub",
+                    "f64.mul" => "fmul",
+                    _ => "fdiv",
+                };
+                let r = self.fresh();
+                self.out_str(&format!("  {} = {} double {}, {}\n", r, k, a, b));
+                Some((Some(r), "double".into(), false))
+            }
+            // Ordered predicates (`o*`) are false when either operand is NaN;
+            // `f64.neq` uses `une` so NaN != anything is true.
+            "f64.gt" | "f64.lt" | "f64.ge" | "f64.le" | "f64.eq" | "f64.neq" => {
+                let (a, b) = match self.lower_f64_pair(op, args)? {
+                    Ok(pair) => pair,
+                    Err(()) => return Some((None, String::new(), true)),
+                };
+                let pred = match op {
+                    "f64.gt" => "ogt", "f64.lt" => "olt", "f64.ge" => "oge",
+                    "f64.le" => "ole", "f64.eq" => "oeq", _ => "une",
+                };
+                let c = self.fresh();
+                self.out_str(&format!("  {} = fcmp {} double {}, {}\n", c, pred, a, b));
+                let r = self.fresh();
+                self.out_str(&format!("  {} = zext i1 {} to i64\n", r, c));
+                Some((Some(r), "i64".into(), false))
+            }
+            "f64.neg" => {
+                if args.len() != 1 { return None; }
+                let (a, aty, d) = self.lower_expr(&args[0]);
+                if d { return Some((None, String::new(), true)); }
+                if aty != "double" { self.err("f64.neg needs f64"); }
+                let r = self.fresh();
+                self.out_str(&format!("  {} = fneg double {}\n", r, a.unwrap()));
+                Some((Some(r), "double".into(), false))
+            }
+            "f64.abs" => {
+                if args.len() != 1 { return None; }
+                let (a, aty, d) = self.lower_expr(&args[0]);
+                if d { return Some((None, String::new(), true)); }
+                if aty != "double" { self.err("f64.abs needs f64"); }
+                let r = self.fresh();
+                self.out_str(&format!("  {} = call double @llvm.fabs.f64(double {})\n", r, a.unwrap()));
+                Some((Some(r), "double".into(), false))
+            }
+            "f64.to_str" => {
+                if args.len() != 1 { return None; }
+                let (a, aty, d) = self.lower_expr(&args[0]);
+                if d { return Some((None, String::new(), true)); }
+                if aty != "double" { self.err("f64.to_str needs f64"); }
+                let r = self.fresh();
+                self.out_str(&format!("  {} = call ptr @aury_f64_to_str(double {})\n", r, a.unwrap()));
+                Some((Some(r), "ptr".into(), false))
+            }
             // ---- str builtins ----
             "str.concat" => {
                 if args.len() != 2 { return None; }
@@ -926,6 +1051,26 @@ impl Lowerer {
         match (vty.as_str(), tty.as_str()) {
             ("i64", "i64") => (Some(v), "i64".into(), false),
             ("ptr", "ptr") => (Some(v), "ptr".into(), false),
+            ("double", "double") => (Some(v), "double".into(), false),
+            ("i64", "double") => {
+                // i64 -> f64 (round to nearest even; exact for small magnitudes)
+                let r = self.fresh();
+                self.out_str(&format!("  {} = sitofp i64 {} to double\n", r, v));
+                (Some(r), "double".into(), false)
+            }
+            ("double", "i64") => {
+                // f64 -> i64: saturating, NaN->0, truncate toward zero. The C
+                // helper matches Rust's `as` so interp and native agree.
+                let r = self.fresh();
+                self.out_str(&format!("  {} = call i64 @aury_f64_to_i64(double {})\n", r, v));
+                (Some(r), "i64".into(), false)
+            }
+            ("double", "ptr") => {
+                // f64 -> str (canonical format)
+                let r = self.fresh();
+                self.out_str(&format!("  {} = call ptr @aury_f64_to_str(double {})\n", r, v));
+                (Some(r), "ptr".into(), false)
+            }
             ("i64", "ptr") => {
                 // i64 -> str
                 let r = self.fresh();
@@ -1065,6 +1210,19 @@ impl Lowerer {
                             }
                             let cond = self.fresh();
                             self.out_str(&format!("  {} = icmp eq i64 {}, {}\n", cond, sv, value));
+                            cond
+                        }
+                        Lit::F64(bits) => {
+                            if sty != "double" {
+                                self.err("f64 match literal used with non-f64 scrutinee");
+                            }
+                            // Ordered equality (`oeq`): a NaN scrutinee never
+                            // matches a float literal, exactly like the interp.
+                            let cond = self.fresh();
+                            self.out_str(&format!(
+                                "  {} = fcmp oeq double {}, 0x{:016X}\n",
+                                cond, sv, bits
+                            ));
                             cond
                         }
                         Lit::Bool(value) => {
@@ -1236,6 +1394,7 @@ impl Lowerer {
         match e {
             Expr::Lit { value, .. } => match value {
                 Lit::I64(_) => Type::I64,
+                Lit::F64(_) => Type::F64,
                 Lit::Bool(_) => Type::Bool,
                 Lit::Str(_) => Type::Str,
                 Lit::Unit => Type::Unit,
@@ -1442,6 +1601,9 @@ impl Lowerer {
         match op {
             "i64.add" | "i64.sub" | "i64.mul" | "i64.div" | "i64.mod" | "i64.neg" | "i64.abs" => Type::I64,
             "i64.gt" | "i64.lt" | "i64.ge" | "i64.le" | "i64.eq" | "i64.neq" => Type::Bool,
+            "f64.add" | "f64.sub" | "f64.mul" | "f64.div" | "f64.neg" | "f64.abs" => Type::F64,
+            "f64.gt" | "f64.lt" | "f64.ge" | "f64.le" | "f64.eq" | "f64.neq" => Type::Bool,
+            "f64.to_str" => Type::Str,
             "i64.to_str" | "str.concat" => Type::Str,
             "i64.parse" | "i64.from_str" => Type::Result(Box::new(Type::I64), Box::new(Type::Str)),
             "bool.and" | "bool.or" | "bool.not" | "bool.eq" => Type::Bool,

@@ -20,8 +20,10 @@
 //! - [`lower`]: type-aware LLVM IR lowering for the native-supported subset.
 //! - [`lower_sketch`]: structural MLIR preview retained for `aury lower`.
 //! - [`loop_driver`]: the closed repair loop.
+//! - [`eval`]: the evaluation harness — repair convergence over a task corpus.
 
 pub mod ast;
+pub mod eval;
 pub mod id;
 pub mod interp;
 pub mod json;

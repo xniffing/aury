@@ -1,0 +1,18 @@
+## Evaluation — repair convergence over the corpus
+
+Deterministic (seed `0xC0FFEE`), reproduced by `aury eval eval/corpus.json`.
+
+Columns: **First-shot** = the model's initial program passed type + intent checks with zero repairs; **Loop** = accepted (`✓`) / correctly rejected (`ø`, a deliberately-wrong spec) / failed (`✗`) after the closed loop; **Patches** = mechanical repairs the loop applied; **Oracle** = concrete input→output checks that passed.
+
+| Task | First-shot | Loop | Patches | Oracle | Notes |
+|------|:----------:|:----:|:-------:|:------:|-------|
+| gcd | ✓ | ✓ | 0 | 2/2 |  |
+| loop-factorial | ✓ | ✓ | 0 | 2/2 |  |
+| mean-f64 | ✓ | ✓ | 0 | 1/1 |  |
+| parse-classify | ✓ | ✓ | 0 | 2/2 |  |
+| dice-effect | ✓ | ✓ | 0 | — |  |
+| calculator | ✓ | ✓ | 0 | 3/3 |  |
+| unterminated | parse✗ | ✓ | 1 | 1/1 |  |
+| false-property | intent✗ | ø | 0 | — | correctly rejected (intent gate) |
+
+**8/8 outcomes as expected** · first-shot-valid 7 · rescued by repair 1 · oracle checks 11/11.

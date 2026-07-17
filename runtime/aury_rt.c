@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,6 +130,33 @@ aury_str aury_i64_to_str(int64_t number) {
     return make_string(buffer, len < 0 ? 0 : len);
 }
 
+// Canonical f64 -> decimal. MUST stay byte-identical to `interp::format_f64`
+// in Rust: finite values use 17 significant digits in normalized scientific
+// form (`%.16e`, correctly rounded, same digits Rust's `{:.16e}` emits);
+// NaN/inf are spelled explicitly because the two libraries disagree otherwise.
+static int format_f64(double x, char *buffer, size_t cap) {
+    if (isnan(x)) return snprintf(buffer, cap, "%s", "NaN");
+    if (isinf(x)) return snprintf(buffer, cap, "%s", x < 0 ? "-inf" : "inf");
+    return snprintf(buffer, cap, "%.16e", x);
+}
+
+aury_str aury_f64_to_str(double x) {
+    char buffer[64];
+    int len = format_f64(x, buffer, sizeof(buffer));
+    return make_string(buffer, len < 0 ? 0 : len);
+}
+
+// f64 -> i64 with the same saturating semantics as Rust's `x as i64`: NaN maps
+// to 0, out-of-range magnitudes clamp to INT64_MIN/MAX, otherwise truncate
+// toward zero. LLVM `fptosi` would be undefined on those edges, so casts route
+// through here to keep the native backend in lockstep with the interpreter.
+int64_t aury_f64_to_i64(double x) {
+    if (isnan(x)) return 0;
+    if (x >= 9223372036854775808.0) return INT64_MAX;   // >= 2^63
+    if (x <= -9223372036854775808.0) return INT64_MIN;  // <= -2^63
+    return (int64_t)x;
+}
+
 static aury_result_t *parse_i64(aury_str string, int trim) {
     int64_t start = 0, end = string->len;
     if (trim) {
@@ -210,7 +238,7 @@ static uint64_t descriptor_number(const char **descriptor) {
 
 static const char *skip_descriptor(const char *descriptor) {
     char kind = *descriptor++;
-    if (kind == 'i' || kind == 'b' || kind == 's' || kind == 'u') return descriptor;
+    if (kind == 'i' || kind == 'b' || kind == 's' || kind == 'u' || kind == 'f') return descriptor;
     if (kind == 'v') return skip_descriptor(descriptor);
     if (kind == 'r') return skip_descriptor(skip_descriptor(descriptor));
     if (kind == 't') {
@@ -230,6 +258,15 @@ static const char *skip_descriptor(const char *descriptor) {
 static void print_value(int64_t bits, const char **descriptor) {
     char kind = *(*descriptor)++;
     if (kind == 'i') { fprintf(stdout, "%" PRId64, bits); return; }
+    if (kind == 'f') {
+        // Slots hold the raw IEEE bits; reinterpret and print canonically.
+        double value;
+        memcpy(&value, &bits, sizeof(value));
+        char buffer[64];
+        format_f64(value, buffer, sizeof(buffer));
+        fputs(buffer, stdout);
+        return;
+    }
     if (kind == 'b') { fputs(bits ? "true" : "false", stdout); return; }
     if (kind == 's') { print_string((aury_str)(intptr_t)bits); return; }
     if (kind == 'u') { fputs("unit", stdout); return; }

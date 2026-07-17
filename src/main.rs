@@ -37,6 +37,9 @@ COMMANDS:
   ingest <file.json> [out]   Convert a JSON AST (the AI authoring surface) to the
                             canonical s-expr form, validate it, and write <out>.aury.
   emit-json <file.aury>      Convert an existing .aury to array-form JSON (for round-trip).
+  eval <corpus.json> [--seed N] [--md out.md] [--csv out.csv]
+                             Run the closed loop over a corpus of (intent, program)
+                             tasks and print a repair-convergence table.
 
 EXAMPLES:
   aury validate examples/add.aury
@@ -100,6 +103,7 @@ fn main() -> ExitCode {
         "json" => cmd_json(&args[2..]),
         "ingest" => cmd_ingest(&args[2..]),
         "emit-json" => cmd_emit_json(&args[2..]),
+        "eval" => cmd_eval(&args[2..]),
         other => {
             eprintln!("unknown command: {}\n\n{}", other, USAGE);
             return ExitCode::from(2);
@@ -253,6 +257,42 @@ fn cmd_loop(args: &[String]) -> Result<ExitCode, String> {
                 println!("{}", r.to_json());
             }
         }
+        Ok(ExitCode::from(1))
+    }
+}
+
+fn cmd_eval(args: &[String]) -> Result<ExitCode, String> {
+    let manifest = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or("eval <corpus.json> [--seed N] [--md out.md] [--csv out.csv]")?;
+    let flag = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let seed = flag("--seed").map(|s| {
+        s.parse::<u64>()
+            .unwrap_or_else(|_| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(aury::eval::DEFAULT_SEED))
+    });
+    let report = aury::eval::run_corpus(std::path::Path::new(manifest), seed)?;
+    let markdown = report.to_markdown();
+    print!("{}", markdown);
+    println!("\n{}", report.summary());
+    if let Some(path) = flag("--md") {
+        std::fs::write(&path, &markdown).map_err(|e| format!("write {}: {}", path, e))?;
+        eprintln!("wrote {}", path);
+    }
+    if let Some(path) = flag("--csv") {
+        std::fs::write(&path, report.to_csv()).map_err(|e| format!("write {}: {}", path, e))?;
+        eprintln!("wrote {}", path);
+    }
+    // Nonzero exit if any task's outcome diverged from expectation or an oracle
+    // check failed — so `aury eval` doubles as a regression gate in CI.
+    if report.all_passed() {
+        Ok(ExitCode::SUCCESS)
+    } else {
         Ok(ExitCode::from(1))
     }
 }

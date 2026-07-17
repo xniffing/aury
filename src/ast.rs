@@ -256,9 +256,25 @@ pub enum Pattern {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Lit {
     I64(i64),
+    /// Float literal, stored as its IEEE-754 bit pattern so `Lit` can keep its
+    /// `Eq`/`Hash` derives (raw `f64` is neither). Recover the value with
+    /// `f64::from_bits`. Native lowering emits the same bits as an LLVM
+    /// `double 0x…` constant, so the literal is byte-identical across backends.
+    F64(u64),
     Bool(bool),
     Str(String),
     Unit,
+}
+
+/// True if `a` should be read as an `f64` literal: it must fail to parse as an
+/// `i64` and carry a decimal point (so bare `inf`/`nan`/identifiers are never
+/// silently captured, and integers stay `i64`). Exponent-only forms like
+/// `1e10` are intentionally *not* floats — write `1.0e10`.
+pub fn parse_f64_literal(a: &str) -> Option<u64> {
+    if a.parse::<i64>().is_ok() || !a.contains('.') {
+        return None;
+    }
+    a.parse::<f64>().ok().map(f64::to_bits)
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +537,11 @@ fn build_expr(s: &Sexpr) -> Result<Expr, String> {
                 let id = sexpr_id(s);
                 return Ok(Expr::Lit { id, value: Lit::I64(n) });
             }
+            // decimals are f64 literals
+            if let Some(bits) = parse_f64_literal(a) {
+                let id = sexpr_id(s);
+                return Ok(Expr::Lit { id, value: Lit::F64(bits) });
+            }
             let id = sexpr_id(s);
             Ok(Expr::Ref { id, name: a.clone() })
         }
@@ -709,6 +730,9 @@ fn build_pattern(s: &Sexpr) -> Result<Pattern, String> {
             if let Ok(n) = a.parse::<i64>() {
                 return Ok(Pattern::Lit(Lit::I64(n)));
             }
+            if let Some(bits) = parse_f64_literal(a) {
+                return Ok(Pattern::Lit(Lit::F64(bits)));
+            }
             if a == "true" {
                 return Ok(Pattern::Lit(Lit::Bool(true)));
             }
@@ -724,6 +748,9 @@ fn build_pattern(s: &Sexpr) -> Result<Pattern, String> {
                     Sexpr::Atom(a) => {
                         if let Ok(n) = a.parse::<i64>() {
                             return Ok(Pattern::Lit(Lit::I64(n)));
+                        }
+                        if let Some(bits) = parse_f64_literal(a) {
+                            return Ok(Pattern::Lit(Lit::F64(bits)));
                         }
                         Ok(Pattern::Lit(Lit::Str(a.clone())))
                     }
@@ -744,6 +771,9 @@ fn build_lit(s: &Sexpr) -> Result<Expr, String> {
             if let Ok(n) = a.parse::<i64>() {
                 let id = sexpr_id(s);
                 Ok(Expr::Lit { id, value: Lit::I64(n) })
+            } else if let Some(bits) = parse_f64_literal(a) {
+                let id = sexpr_id(s);
+                Ok(Expr::Lit { id, value: Lit::F64(bits) })
             } else if a == "true" {
                 let id = sexpr_id(s);
                 Ok(Expr::Lit { id, value: Lit::Bool(true) })
