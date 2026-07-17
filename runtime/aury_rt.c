@@ -391,6 +391,79 @@ void aury_value_print(int64_t bits, const char *descriptor) {
     putchar('\n');
 }
 
+// Deep-copy a value described by *descriptor, allocating the copy via the normal
+// allocators (which register in whatever frame is current). Advances *descriptor
+// past the type, mirroring print_value's walk. Scalars carry no pointer and are
+// returned unchanged. Used to relocate a region's escaping result into the
+// parent frame before the region's own frame is freed.
+static int64_t relocate_value(int64_t bits, const char **descriptor) {
+    char kind = *(*descriptor)++;
+    if (kind == 'i' || kind == 'f' || kind == 'b' || kind == 'u') return bits;
+    if (kind == 's') {
+        aury_str s = (aury_str)(intptr_t)bits;
+        return (int64_t)(intptr_t)make_string(s->data, s->len);
+    }
+    if (kind == 'v') {
+        aury_vec_t *vector = (aury_vec_t *)(intptr_t)bits;
+        const char *element = *descriptor;
+        aury_vec_t *out = aury_vec_new(vector->len);
+        for (int64_t i = 0; i < vector->len; i++) {
+            const char *cursor = element;
+            out->slots[i] = relocate_value(vector->slots[i], &cursor);
+        }
+        *descriptor = skip_descriptor(element);
+        return (int64_t)(intptr_t)out;
+    }
+    if (kind == 't') {
+        uint64_t name_len = descriptor_number(descriptor);
+        *descriptor += name_len;
+        uint64_t fields = descriptor_number(descriptor);
+        int64_t *slots = (int64_t *)(intptr_t)bits;
+        int64_t *out = aury_box_new((int64_t)fields);
+        for (uint64_t i = 0; i < fields; i++) {
+            uint64_t field_len = descriptor_number(descriptor);
+            *descriptor += field_len;
+            out[i] = relocate_value(slots[i], descriptor);
+        }
+        return (int64_t)(intptr_t)out;
+    }
+    if (kind == 'r') {
+        aury_result_t *result = (aury_result_t *)(intptr_t)bits;
+        const char *ok = *descriptor;
+        const char *err = skip_descriptor(ok);
+        aury_result_t *out = (aury_result_t *)checked_calloc(1, sizeof(aury_result_t));
+        out->tag = result->tag;
+        if (result->tag) {
+            const char *cursor = ok;
+            out->payload = relocate_value(result->payload, &cursor);
+            *descriptor = skip_descriptor(err);
+        } else {
+            const char *cursor = err;
+            out->payload = relocate_value(result->payload, &cursor);
+            *descriptor = cursor;
+        }
+        return (int64_t)(intptr_t)out;
+    }
+    abort();
+}
+
+// Exit a region, keeping its result: deep-copy the result into the parent frame
+// (so it survives), then bulk-free everything the region allocated. Scalars are
+// copied by value, so this is uniform for scalar and aggregate results.
+int64_t aury_region_exit_keep(int64_t result, const char *descriptor) {
+    if (aury_arena_top < 0) abort();
+    aury_arena_frame child = aury_arena_stack[aury_arena_top];
+    aury_arena_top--; // relocation allocations register in the parent frame
+    const char *cursor = descriptor;
+    int64_t relocated = relocate_value(result, &cursor);
+    for (size_t i = 0; i < child.len; i++) {
+        free(child.ptrs[i]);
+        aury_arena_live--;
+    }
+    free(child.ptrs);
+    return relocated;
+}
+
 void aury_str_print(aury_str string) {
     print_string(string);
     putchar('\n');
