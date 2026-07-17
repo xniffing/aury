@@ -123,9 +123,11 @@ never meaningfully exercised is flagged as **vacuous**.
 | `call` | `{"kind":"call","op":"i64.add","args":[<e>,...]}` | builtin **or** user fn by name |
 | `if` | `{"kind":"if","cond":<e>,"then":<e>,"else":<e>}` | all three required |
 | `match` | `{"kind":"match","scrut":<e>,"arms":[{"pattern":<p>,"body":<e>}]}` | see patterns below |
-| `loop` | `{"kind":"loop","body":<e>}` | repeat until a `return` fires |
-| `return` | `{"kind":"return","value":<e>}` | early return (used inside `loop`) |
-| `block` | `{"kind":"block","items":[<e>,...]}` | sequence; value is the last |
+| `loop` | `{"kind":"loop","body":<e>}` | repeat `body`; a `break` inside exits and gives the loop its value, else it runs until a `return` (diverges) |
+| `break` | `{"kind":"break","value":<e>}` | exit the nearest enclosing `loop`; the loop evaluates to `value` (`value` optional → unit) |
+| `set` | `{"kind":"set","name":"acc","value":<e>}` | reassign a mutable `let` local (not a param); yields unit |
+| `return` | `{"kind":"return","value":<e>}` | early return from the **function** (unwinds past loops) |
+| `block` | `{"kind":"block","stmts":[<e>,...],"tail":<e>}` | sequence the `stmts`, then the value is `tail` |
 | `region` | `{"kind":"region","name":"r","body":<e>}` | open an allocation/effect region |
 | `copy` | `{"kind":"copy","value":<e>}` | explicit copy of a value |
 | `vec-new` | `{"kind":"vec-new","type":"(vec i64)","elems":[<e>,...]}` | build a vector |
@@ -141,6 +143,41 @@ never meaningfully exercised is flagged as **vacuous**.
 | `wild` | `{"kind":"wild"}` | anything (`_`) |
 | `bind` | `{"kind":"bind","name":"x"}` | anything, binds `x` |
 | `lit` | `{"kind":"lit","value": 0}` | that exact literal |
+
+### Mutable loops (`set` + `loop` + `break`)
+
+Iteration can use a **mutable accumulator** instead of a recursive helper. Bind
+the state with `let`, mutate it with `set`, and exit the `loop` with `break`,
+which makes the whole `loop` expression evaluate to the break value. Iterative
+factorial:
+
+```json
+{"kind":"let","name":"acc","type":"i64","init":{"kind":"lit","value":1},
+ "body":{"kind":"let","name":"i","type":"i64","init":{"kind":"ref","name":"n"},
+  "body":{"kind":"loop","body":{
+    "kind":"if",
+    "cond":{"kind":"call","op":"i64.le","args":[{"kind":"ref","name":"i"},{"kind":"lit","value":1}]},
+    "then":{"kind":"break","value":{"kind":"ref","name":"acc"}},
+    "else":{"kind":"block","stmts":[
+      {"kind":"set","name":"acc","value":{"kind":"call","op":"i64.mul","args":[{"kind":"ref","name":"acc"},{"kind":"ref","name":"i"}]}},
+      {"kind":"set","name":"i","value":{"kind":"call","op":"i64.sub","args":[{"kind":"ref","name":"i"},{"kind":"lit","value":1}]}}],
+      "tail":{"kind":"lit","value":null}}}}}}
+```
+
+Rules the validator enforces (each is a rejection with a repair menu):
+
+- `set` targets a **`let`-bound local**, not a parameter (`SET_OF_PARAM`) or an
+  unbound name (`SET_UNBOUND`); the value type must match the binding
+  (`SET_TYPE_MISMATCH`). To "mutate" a parameter, first `let`-bind a copy.
+- `break` must sit inside a `loop` (`BREAK_OUTSIDE_LOOP`), and all breaks in one
+  loop must agree on a value type (`BREAK_TYPE_MISMATCH`) — that type is the
+  loop's type. A loop with **no** `break` diverges (it must be exited by
+  `return`), so it can't be used as a value.
+- `set` yields unit, so it belongs in a `block`'s `stmts`, with a real value
+  (often `{"kind":"lit","value":null}` for unit) as the `tail`.
+
+A `set` inside a `match`/`if` arm mutates the enclosing binding (arms are not
+isolated scopes). Semantics are identical on the interpreter and native backend.
 
 ---
 

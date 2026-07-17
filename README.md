@@ -276,10 +276,10 @@ Each construct is also a repair opportunity, checked with no inference:
 - `break` outside any loop (`BREAK_OUTSIDE_LOOP`), or two `break`s in one loop
   whose value types disagree (`BREAK_TYPE_MISMATCH`).
 
-The interpreter defines the semantics and the native backend must match it
-observably; an iterative accumulator runs identically in both (differential
-parity is a test failure, not a warning). The calculator example's `factorial`
-is written this way as a demonstration.
+The interpreter defines the semantics and the native and wasm backends must
+match it observably; an iterative accumulator runs identically across all three
+(differential parity is a test failure, not a warning). The calculator example's
+`factorial` is written this way as a demonstration.
 
 ---
 
