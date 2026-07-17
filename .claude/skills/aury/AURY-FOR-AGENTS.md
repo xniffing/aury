@@ -276,4 +276,4 @@ can be built for `wasm32-wasi` with the **same** LLVM lowering: `aury wasm` (an
 executable module, run via wasmtime/wasmer) and `aury wasm-lib … --export <fn>`
 (a reactor module exporting `aury__<fn>` for a host such as a browser). These are
 backends only — authoring and repair never require the wasm toolchain. See
-`SKILL.md` for the flags and `moon-distance/` for a browser example.
+`SKILL.md` for the flags and `projects/calculator/` for a browser example.

@@ -1,0 +1,1967 @@
+{
+  "kind": "module",
+  "name": "calculator",
+  "items": [
+    {
+      "kind": "spec",
+      "properties": [
+        {
+          "name": "add-commutative",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            },
+            {
+              "name": "b",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "add",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "b"
+                  }
+                ]
+              },
+              {
+                "kind": "call",
+                "op": "add",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "b"
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "multiply-commutative",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            },
+            {
+              "name": "b",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "multiply",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "b"
+                  }
+                ]
+              },
+              {
+                "kind": "call",
+                "op": "multiply",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "b"
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "add-sub-inverse",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            },
+            {
+              "name": "b",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "subtract",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "add",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "a"
+                      },
+                      {
+                        "kind": "ref",
+                        "name": "b"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "b"
+                  }
+                ]
+              },
+              {
+                "kind": "ref",
+                "name": "a"
+              }
+            ]
+          }
+        },
+        {
+          "name": "negate-involution",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "negate",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "negate",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "a"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "kind": "ref",
+                "name": "a"
+              }
+            ]
+          }
+        },
+        {
+          "name": "double-is-mul-two",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "double",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  }
+                ]
+              },
+              {
+                "kind": "call",
+                "op": "multiply",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 2
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "max-plus-min-preserves-sum",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            },
+            {
+              "name": "b",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "add",
+                "args": [
+                  {
+                    "kind": "call",
+                    "op": "maximum",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "a"
+                      },
+                      {
+                        "kind": "ref",
+                        "name": "b"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "call",
+                    "op": "minimum",
+                    "args": [
+                      {
+                        "kind": "ref",
+                        "name": "a"
+                      },
+                      {
+                        "kind": "ref",
+                        "name": "b"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "kind": "call",
+                "op": "add",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "a"
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "b"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "abs-of-positive",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "i64.gt",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "a"
+                },
+                {
+                  "kind": "lit",
+                  "value": 0
+                }
+              ]
+            },
+            "then": {
+              "kind": "call",
+              "op": "bool.and",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.eq",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "absolute",
+                      "args": [
+                        {
+                          "kind": "ref",
+                          "name": "a"
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "ref",
+                      "name": "a"
+                    }
+                  ]
+                },
+                {
+                  "kind": "call",
+                  "op": "i64.eq",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "absolute",
+                      "args": [
+                        {
+                          "kind": "call",
+                          "op": "negate",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "a"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "ref",
+                      "name": "a"
+                    }
+                  ]
+                }
+              ]
+            },
+            "else": {
+              "kind": "lit",
+              "value": true
+            }
+          }
+        },
+        {
+          "name": "gcd-divides-both",
+          "forall": [
+            {
+              "name": "a",
+              "type": "i64"
+            },
+            {
+              "name": "b",
+              "type": "i64"
+            }
+          ],
+          "body": {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "bool.and",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.gt",
+                  "args": [
+                    {
+                      "kind": "ref",
+                      "name": "a"
+                    },
+                    {
+                      "kind": "lit",
+                      "value": 0
+                    }
+                  ]
+                },
+                {
+                  "kind": "call",
+                  "op": "i64.gt",
+                  "args": [
+                    {
+                      "kind": "ref",
+                      "name": "b"
+                    },
+                    {
+                      "kind": "lit",
+                      "value": 0
+                    }
+                  ]
+                }
+              ]
+            },
+            "then": {
+              "kind": "call",
+              "op": "bool.and",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.eq",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "i64.mod",
+                      "args": [
+                        {
+                          "kind": "ref",
+                          "name": "a"
+                        },
+                        {
+                          "kind": "call",
+                          "op": "gcd",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "a"
+                            },
+                            {
+                              "kind": "ref",
+                              "name": "b"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "lit",
+                      "value": 0
+                    }
+                  ]
+                },
+                {
+                  "kind": "call",
+                  "op": "i64.eq",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "op": "i64.mod",
+                      "args": [
+                        {
+                          "kind": "ref",
+                          "name": "b"
+                        },
+                        {
+                          "kind": "call",
+                          "op": "gcd",
+                          "args": [
+                            {
+                              "kind": "ref",
+                              "name": "a"
+                            },
+                            {
+                              "kind": "ref",
+                              "name": "b"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "lit",
+                      "value": 0
+                    }
+                  ]
+                }
+              ]
+            },
+            "else": {
+              "kind": "lit",
+              "value": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "kind": "fn",
+      "name": "add",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.add",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          },
+          {
+            "kind": "ref",
+            "name": "b"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "subtract",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.sub",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          },
+          {
+            "kind": "ref",
+            "name": "b"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "multiply",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.mul",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          },
+          {
+            "kind": "ref",
+            "name": "b"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "divide",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.eq",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "b"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": 0
+        },
+        "else": {
+          "kind": "call",
+          "op": "i64.div",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "a"
+            },
+            {
+              "kind": "ref",
+              "name": "b"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "modulo",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.eq",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "b"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": 0
+        },
+        "else": {
+          "kind": "call",
+          "op": "i64.mod",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "a"
+            },
+            {
+              "kind": "ref",
+              "name": "b"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "percent",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mul",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "a"
+              },
+              {
+                "kind": "ref",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "kind": "lit",
+            "value": 100
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "average",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.div",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.add",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "a"
+              },
+              {
+                "kind": "ref",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "kind": "lit",
+            "value": 2
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "maximum",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.ge",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "a"
+            },
+            {
+              "kind": "ref",
+              "name": "b"
+            }
+          ]
+        },
+        "then": {
+          "kind": "ref",
+          "name": "a"
+        },
+        "else": {
+          "kind": "ref",
+          "name": "b"
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "minimum",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.le",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "a"
+            },
+            {
+              "kind": "ref",
+              "name": "b"
+            }
+          ]
+        },
+        "then": {
+          "kind": "ref",
+          "name": "a"
+        },
+        "else": {
+          "kind": "ref",
+          "name": "b"
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "negate",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.neg",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "absolute",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.abs",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "square",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.mul",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          },
+          {
+            "kind": "ref",
+            "name": "a"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "increment",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.add",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          },
+          {
+            "kind": "lit",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "decrement",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.sub",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          },
+          {
+            "kind": "lit",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "double",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "call",
+        "op": "i64.mul",
+        "args": [
+          {
+            "kind": "ref",
+            "name": "a"
+          },
+          {
+            "kind": "lit",
+            "value": 2
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "gcd",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.eq",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "b"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "call",
+          "op": "i64.abs",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "a"
+            }
+          ]
+        },
+        "else": {
+          "kind": "call",
+          "op": "gcd",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "b"
+            },
+            {
+              "kind": "call",
+              "op": "i64.mod",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "a"
+                },
+                {
+                  "kind": "ref",
+                  "name": "b"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "lcm",
+      "params": [
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "bool.or",
+          "args": [
+            {
+              "kind": "call",
+              "op": "i64.eq",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "a"
+                },
+                {
+                  "kind": "lit",
+                  "value": 0
+                }
+              ]
+            },
+            {
+              "kind": "call",
+              "op": "i64.eq",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "b"
+                },
+                {
+                  "kind": "lit",
+                  "value": 0
+                }
+              ]
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": 0
+        },
+        "else": {
+          "kind": "call",
+          "op": "i64.abs",
+          "args": [
+            {
+              "kind": "call",
+              "op": "i64.mul",
+              "args": [
+                {
+                  "kind": "call",
+                  "op": "i64.div",
+                  "args": [
+                    {
+                      "kind": "ref",
+                      "name": "a"
+                    },
+                    {
+                      "kind": "call",
+                      "op": "gcd",
+                      "args": [
+                        {
+                          "kind": "ref",
+                          "name": "a"
+                        },
+                        {
+                          "kind": "ref",
+                          "name": "b"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "kind": "ref",
+                  "name": "b"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "power_iter",
+      "params": [
+        {
+          "name": "base",
+          "type": "i64"
+        },
+        {
+          "name": "exp",
+          "type": "i64"
+        },
+        {
+          "name": "acc",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.le",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "exp"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "ref",
+          "name": "acc"
+        },
+        "else": {
+          "kind": "call",
+          "op": "power_iter",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "base"
+            },
+            {
+              "kind": "call",
+              "op": "i64.sub",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "exp"
+                },
+                {
+                  "kind": "lit",
+                  "value": 1
+                }
+              ]
+            },
+            {
+              "kind": "call",
+              "op": "i64.mul",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "acc"
+                },
+                {
+                  "kind": "ref",
+                  "name": "base"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "power",
+      "params": [
+        {
+          "name": "base",
+          "type": "i64"
+        },
+        {
+          "name": "exp",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.lt",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "exp"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": 0
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.gt",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "exp"
+              },
+              {
+                "kind": "lit",
+                "value": 1024
+              }
+            ]
+          },
+          "then": {
+            "kind": "lit",
+            "value": 0
+          },
+          "else": {
+            "kind": "call",
+            "op": "power_iter",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "base"
+              },
+              {
+                "kind": "ref",
+                "name": "exp"
+              },
+              {
+                "kind": "lit",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "factorial_iter",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        },
+        {
+          "name": "acc",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.le",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "n"
+            },
+            {
+              "kind": "lit",
+              "value": 1
+            }
+          ]
+        },
+        "then": {
+          "kind": "ref",
+          "name": "acc"
+        },
+        "else": {
+          "kind": "call",
+          "op": "factorial_iter",
+          "args": [
+            {
+              "kind": "call",
+              "op": "i64.sub",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "n"
+                },
+                {
+                  "kind": "lit",
+                  "value": 1
+                }
+              ]
+            },
+            {
+              "kind": "call",
+              "op": "i64.mul",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "acc"
+                },
+                {
+                  "kind": "ref",
+                  "name": "n"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "factorial",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.lt",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "n"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": 0
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.gt",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "lit",
+                "value": 20
+              }
+            ]
+          },
+          "then": {
+            "kind": "lit",
+            "value": 0
+          },
+          "else": {
+            "kind": "call",
+            "op": "factorial_iter",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "lit",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "fib_iter",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        },
+        {
+          "name": "a",
+          "type": "i64"
+        },
+        {
+          "name": "b",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.le",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "n"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "ref",
+          "name": "a"
+        },
+        "else": {
+          "kind": "call",
+          "op": "fib_iter",
+          "args": [
+            {
+              "kind": "call",
+              "op": "i64.sub",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "n"
+                },
+                {
+                  "kind": "lit",
+                  "value": 1
+                }
+              ]
+            },
+            {
+              "kind": "ref",
+              "name": "b"
+            },
+            {
+              "kind": "call",
+              "op": "i64.add",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "a"
+                },
+                {
+                  "kind": "ref",
+                  "name": "b"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "fibonacci",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.lt",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "n"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": 0
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.gt",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "lit",
+                "value": 92
+              }
+            ]
+          },
+          "then": {
+            "kind": "lit",
+            "value": 0
+          },
+          "else": {
+            "kind": "call",
+            "op": "fib_iter",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "lit",
+                "value": 0
+              },
+              {
+                "kind": "lit",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "isqrt_newton",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        },
+        {
+          "name": "x",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "let",
+        "name": "y",
+        "type": "i64",
+        "init": {
+          "kind": "call",
+          "op": "i64.div",
+          "args": [
+            {
+              "kind": "call",
+              "op": "i64.add",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "x"
+                },
+                {
+                  "kind": "call",
+                  "op": "i64.div",
+                  "args": [
+                    {
+                      "kind": "ref",
+                      "name": "n"
+                    },
+                    {
+                      "kind": "ref",
+                      "name": "x"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "kind": "lit",
+              "value": 2
+            }
+          ]
+        },
+        "body": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.ge",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "y"
+              },
+              {
+                "kind": "ref",
+                "name": "x"
+              }
+            ]
+          },
+          "then": {
+            "kind": "ref",
+            "name": "x"
+          },
+          "else": {
+            "kind": "call",
+            "op": "isqrt_newton",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "ref",
+                "name": "y"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "isqrt",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        }
+      ],
+      "ret": "i64",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.lt",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "n"
+            },
+            {
+              "kind": "lit",
+              "value": 0
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": 0
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.lt",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "lit",
+                "value": 2
+              }
+            ]
+          },
+          "then": {
+            "kind": "ref",
+            "name": "n"
+          },
+          "else": {
+            "kind": "call",
+            "op": "isqrt_newton",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "ref",
+                "name": "n"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "is_even",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        }
+      ],
+      "ret": "bool",
+      "body": {
+        "kind": "call",
+        "op": "i64.eq",
+        "args": [
+          {
+            "kind": "call",
+            "op": "i64.mod",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "lit",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "kind": "lit",
+            "value": 0
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "prime_check",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        },
+        {
+          "name": "i",
+          "type": "i64"
+        }
+      ],
+      "ret": "bool",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.gt",
+          "args": [
+            {
+              "kind": "call",
+              "op": "i64.mul",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "i"
+                },
+                {
+                  "kind": "ref",
+                  "name": "i"
+                }
+              ]
+            },
+            {
+              "kind": "ref",
+              "name": "n"
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": true
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "call",
+                "op": "i64.mod",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "n"
+                  },
+                  {
+                    "kind": "ref",
+                    "name": "i"
+                  }
+                ]
+              },
+              {
+                "kind": "lit",
+                "value": 0
+              }
+            ]
+          },
+          "then": {
+            "kind": "lit",
+            "value": false
+          },
+          "else": {
+            "kind": "call",
+            "op": "prime_check",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "call",
+                "op": "i64.add",
+                "args": [
+                  {
+                    "kind": "ref",
+                    "name": "i"
+                  },
+                  {
+                    "kind": "lit",
+                    "value": 2
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "fn",
+      "name": "is_prime",
+      "params": [
+        {
+          "name": "n",
+          "type": "i64"
+        }
+      ],
+      "ret": "bool",
+      "body": {
+        "kind": "if",
+        "cond": {
+          "kind": "call",
+          "op": "i64.lt",
+          "args": [
+            {
+              "kind": "ref",
+              "name": "n"
+            },
+            {
+              "kind": "lit",
+              "value": 2
+            }
+          ]
+        },
+        "then": {
+          "kind": "lit",
+          "value": false
+        },
+        "else": {
+          "kind": "if",
+          "cond": {
+            "kind": "call",
+            "op": "i64.eq",
+            "args": [
+              {
+                "kind": "ref",
+                "name": "n"
+              },
+              {
+                "kind": "lit",
+                "value": 2
+              }
+            ]
+          },
+          "then": {
+            "kind": "lit",
+            "value": true
+          },
+          "else": {
+            "kind": "if",
+            "cond": {
+              "kind": "call",
+              "op": "is_even",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "n"
+                }
+              ]
+            },
+            "then": {
+              "kind": "lit",
+              "value": false
+            },
+            "else": {
+              "kind": "call",
+              "op": "prime_check",
+              "args": [
+                {
+                  "kind": "ref",
+                  "name": "n"
+                },
+                {
+                  "kind": "lit",
+                  "value": 3
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

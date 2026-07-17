@@ -5,8 +5,13 @@
 *.exe
 *.ll
 
-# Repaired programs emitted by the agent harness (dev.sh)
+# Repaired programs emitted by the agent harness (dev.sh) and its default
+# wasm-lib output; the intended reactor is written to an explicit -o path.
 *.repaired.aury
+*.repaired.wasm
+
+# macOS
+.DS_Store
 
 # Local program workspace (scratch; not part of the tracked corpus)
 /programs/
