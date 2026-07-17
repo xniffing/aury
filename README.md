@@ -760,12 +760,20 @@ The corpus is intentionally small and its programs are curated (so most pass
 first-shot); it demonstrates the loop's mechanics and per-gate convergence end to
 end, not a large-sample success rate.
 
+Tasks may also carry an independent **reference implementation** (a Python
+script under `eval/baseline/`) run against the same oracle inputs. This measures
+cross-implementation *agreement* — whether a hand-written program in another
+language computes the same outputs (currently 5/5 across `gcd` and `calculator`)
+— and is skipped hermetically when no interpreter is present. It is **not** a
+generation-reliability baseline.
+
 ### What has not yet been measured
 
 - first-shot generation success against Python, Rust, or a baseline IR (the
   corpus above measures repair convergence *within* Aury — including a per-gate
-  convergence breakdown — but not a cross-language comparison, which requires
-  model-generated programs in another language on a matched task set);
+  convergence breakdown — and cross-implementation *agreement* against a
+  reference impl, but not a cross-language *generation* comparison, which
+  requires model-generated programs in another language on a matched task set);
 - repair-loop convergence at scale over a large, uncurated intent corpus;
 - semantic preservation under large-program optimization;
 - user comprehension of generated properties;

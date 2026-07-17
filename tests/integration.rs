@@ -1467,6 +1467,18 @@ fn evaluation_corpus_converges_as_expected() {
     assert!(converged_at("effect") >= 1, "effect-gate convergence expected (Track A)");
     assert!(converged_at("region") >= 1, "region-gate convergence expected (Tracks B/C)");
 
+    // Cross-implementation agreement: where a Python reference is available, it
+    // must reproduce every oracle output (hermetic — skipped if python3 absent).
+    for t in &report.tasks {
+        if t.baseline_available {
+            assert_eq!(
+                t.baseline_passed, t.baseline_total,
+                "reference impl disagreed with Aury on task `{}`",
+                t.name
+            );
+        }
+    }
+
     // Determinism: a second run with the same seed is identical.
     let again = aury::eval::run_corpus(&manifest, None).expect("run corpus again");
     assert_eq!(report.summary(), again.summary(), "eval must be deterministic");
