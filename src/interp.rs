@@ -11,6 +11,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     I64(i64),
+    F64(f64),
     Bool(bool),
     Str(String),
     Unit,
@@ -27,6 +28,7 @@ impl Value {
     pub fn type_of(&self) -> Type {
         match self {
             Value::I64(_) => Type::I64,
+            Value::F64(_) => Type::F64,
             Value::Bool(_) => Type::Bool,
             Value::Str(_) => Type::Str,
             Value::Unit => Type::Unit,
@@ -37,6 +39,36 @@ impl Value {
             Value::ResultErr(v) => Type::Result(Box::new(Type::I64), Box::new(v.type_of())),
         }
     }
+}
+
+/// Canonical `f64` → decimal string, used everywhere a float is rendered:
+/// `f64.to_str`, CLI/`show_value` display, and (reimplemented byte-identically
+/// in `runtime/aury_rt.c`) the native/wasm value printer.
+///
+/// The format is deliberately *not* the prettiest shortest round-trip — it is
+/// the one that can be produced identically in Rust and C. Finite values use
+/// 17 significant digits in normalized scientific form `d.dddddddddddddddde±dd`
+/// (`format!("{:.16e}")` here, `%.16e` there — both correctly rounded, so the
+/// digits agree). `NaN`, `inf`, and `-inf` are spelled out explicitly because
+/// the two libraries disagree on their default spellings.
+pub fn format_f64(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".to_string();
+    }
+    if x.is_infinite() {
+        return if x < 0.0 { "-inf".to_string() } else { "inf".to_string() };
+    }
+    let scientific = format!("{:.16e}", x);
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("{:e} always contains an exponent");
+    let exponent: i32 = exponent.parse().expect("exponent is an integer");
+    format!(
+        "{}e{}{:02}",
+        mantissa,
+        if exponent < 0 { '-' } else { '+' },
+        exponent.abs()
+    )
 }
 
 /// A control-flow signal from evaluating an expression.
@@ -387,6 +419,24 @@ impl Interp {
                 _ => return Err(InterpError("parse: not a str".into())),
             },
             "i64.to_str" => Value::Str(one_i64(&args)?.to_string()),
+            // ---- f64 builtins ----
+            // All arithmetic is IEEE-754 and never traps: `f64.div` by zero
+            // yields ±inf (or NaN for 0.0/0.0), matching LLVM `fdiv` and C.
+            "f64.add" => bin_f64(&args, |a, b| a + b)?,
+            "f64.sub" => bin_f64(&args, |a, b| a - b)?,
+            "f64.mul" => bin_f64(&args, |a, b| a * b)?,
+            "f64.div" => bin_f64(&args, |a, b| a / b)?,
+            "f64.neg" => Value::F64(-one_f64(&args)?),
+            "f64.abs" => Value::F64(one_f64(&args)?.abs()),
+            // Comparisons follow IEEE ordering: any comparison involving NaN is
+            // false, except `f64.neq`, which is true (NaN != anything).
+            "f64.gt" => Value::Bool(two_f64(&args)?.0 > two_f64(&args)?.1),
+            "f64.lt" => Value::Bool(two_f64(&args)?.0 < two_f64(&args)?.1),
+            "f64.ge" => Value::Bool(two_f64(&args)?.0 >= two_f64(&args)?.1),
+            "f64.le" => Value::Bool(two_f64(&args)?.0 <= two_f64(&args)?.1),
+            "f64.eq" => Value::Bool(two_f64(&args)?.0 == two_f64(&args)?.1),
+            "f64.neq" => Value::Bool(two_f64(&args)?.0 != two_f64(&args)?.1),
+            "f64.to_str" => Value::Str(format_f64(one_f64(&args)?)),
             "bool.and" => Value::Bool(two_bool(&args)?.0 && two_bool(&args)?.1),
             "bool.or" => Value::Bool(two_bool(&args)?.0 || two_bool(&args)?.1),
             "bool.not" => Value::Bool(!one_bool(&args)?),
@@ -441,6 +491,14 @@ impl Interp {
             },
             (Type::Str, Value::I64(n)) => Ok(Flow::Value(Value::Str(n.to_string()))),
             (Type::Str, Value::Str(_)) => Ok(Flow::Value(v)),
+            // Numeric casts. i64->f64 rounds to nearest (exact for small ints);
+            // f64->i64 truncates toward zero and *saturates* — NaN->0, out of
+            // range clamps to i64::MIN/MAX — matching Rust's `as` and the C
+            // `aury_f64_to_i64` helper used by the native backend.
+            (Type::F64, Value::F64(_)) => Ok(Flow::Value(v)),
+            (Type::F64, Value::I64(n)) => Ok(Flow::Value(Value::F64(*n as f64))),
+            (Type::I64, Value::F64(x)) => Ok(Flow::Value(Value::I64(*x as i64))),
+            (Type::Str, Value::F64(x)) => Ok(Flow::Value(Value::Str(format_f64(*x)))),
             _ => Err(InterpError(format!("cast not supported: {:?} <- {:?}", target, v))),
         }
     }
@@ -458,6 +516,7 @@ impl Interp {
 fn lit_to_value(l: &Lit) -> Value {
     match l {
         Lit::I64(n) => Value::I64(*n),
+        Lit::F64(bits) => Value::F64(f64::from_bits(*bits)),
         Lit::Bool(b) => Value::Bool(*b),
         Lit::Str(s) => Value::Str(s.clone()),
         Lit::Unit => Value::Unit,
@@ -482,6 +541,7 @@ fn match_pattern(p: &Pattern, v: &Value) -> Option<Vec<(String, Value)>> {
 fn value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::I64(x), Value::I64(y)) => x == y,
+        (Value::F64(x), Value::F64(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Unit, Value::Unit) => true,
@@ -501,6 +561,19 @@ fn two_i64(args: &[Value]) -> Result<(i64, i64), InterpError> {
 fn bin_i64(args: &[Value], f: impl Fn(i64, i64) -> i64) -> Result<Value, InterpError> {
     let (a, b) = two_i64(args)?;
     Ok(Value::I64(f(a, b)))
+}
+fn one_f64(args: &[Value]) -> Result<f64, InterpError> {
+    match args.get(0) {
+        Some(Value::F64(x)) => Ok(*x),
+        _ => Err(InterpError("expected f64".into())),
+    }
+}
+fn two_f64(args: &[Value]) -> Result<(f64, f64), InterpError> {
+    Ok((one_f64(&args[..1])?, one_f64(&args[1..])?))
+}
+fn bin_f64(args: &[Value], f: impl Fn(f64, f64) -> f64) -> Result<Value, InterpError> {
+    let (a, b) = two_f64(args)?;
+    Ok(Value::F64(f(a, b)))
 }
 fn one_bool(args: &[Value]) -> Result<bool, InterpError> {
     match args.get(0) {

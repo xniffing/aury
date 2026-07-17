@@ -430,6 +430,29 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         ("loop-table", vec!["3".into()]),
         ("loop-table", vec!["5".into()]),
         ("loop-empty", vec!["7".into()]),
+        // Track 3: f64 arithmetic, edges, casts, and float-carrying aggregates
+        // must be byte-identical across interp and native (format included).
+        ("f-poly", vec!["3.14".into()]),
+        ("f-poly", vec!["-2.5".into()]),
+        ("f-poly", vec!["0.0".into()]),
+        ("f-abs", vec!["-7.5".into()]),
+        ("f-inf", vec![]),
+        ("f-ninf", vec![]),
+        ("f-nan", vec![]),
+        ("f-nan-self-eq", vec![]),
+        ("f-cmp", vec!["1.5".into(), "2.5".into()]),
+        ("f-cmp", vec!["2.5".into(), "1.5".into()]),
+        ("f-to-str", vec!["3.14".into()]),
+        ("f-to-str", vec!["0.1".into()]),
+        ("f-to-str", vec!["-0.0".into()]),
+        ("f-of-i", vec!["42".into()]),
+        ("i-of-f", vec!["3.9".into()]),
+        ("i-of-f", vec!["-3.9".into()]),
+        ("i-of-f", vec!["1e30".into()]),
+        ("f-mean", vec!["[1.0,2.0,3.0,4.0]".into()]),
+        ("f-mean", vec!["[0.5,-0.5]".into()]),
+        ("f-point-x", vec![r#"{"x":1.25,"y":-9.5}"#.into()]),
+        ("f-make-point", vec!["1.25".into(), "-9.5".into()]),
     ];
     let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
     for (index, (entry, args)) in cases.into_iter().enumerate() {
@@ -1009,4 +1032,150 @@ fn set_and_break_survive_the_json_round_trip() {
     let back = aury::json::sexpr_to_json(&s);
     let round = aury::json::json_to_sexpr(&back).unwrap();
     assert_eq!(s, round, "set/break must survive the JSON round trip");
+}
+
+// ---------------------------------------------------------------------------
+// Track 3: f64 floats
+// ---------------------------------------------------------------------------
+
+use aury::interp::Value;
+
+fn f64v(x: f64) -> Value {
+    Value::F64(x)
+}
+
+const FLOATS: &str = r#"
+(module m
+  (fn poly (params (x f64)) (ret f64)
+    (body (call f64.add (call f64.mul (ref x) (ref x)) 1.0)))
+  (fn div (params (a f64) (b f64)) (ret f64) (body (call f64.div (ref a) (ref b))))
+  (fn abs (params (x f64)) (ret f64) (body (call f64.abs (ref x))))
+  (fn eq (params (a f64) (b f64)) (ret bool) (body (call f64.eq (ref a) (ref b))))
+  (fn neq (params (a f64) (b f64)) (ret bool) (body (call f64.neq (ref a) (ref b))))
+  (fn to-str (params (x f64)) (ret str) (body (call f64.to_str (ref x))))
+  (fn of-i (params (n i64)) (ret f64) (body (cast f64 (ref n))))
+  (fn to-i (params (x f64)) (ret i64) (body (cast i64 (ref x)))))"#;
+
+#[test]
+fn f64_arithmetic_and_ieee_edges_in_interp() {
+    let m = module(FLOATS);
+    assert!(check_module(&m).is_accepted());
+    let mut interp = Interp::new(&m, 0);
+    assert_eq!(interp.call_fn("poly", vec![f64v(3.0)]).unwrap(), f64v(10.0));
+    assert_eq!(interp.call_fn("abs", vec![f64v(-7.5)]).unwrap(), f64v(7.5));
+    // Division by zero is IEEE and never traps.
+    assert_eq!(interp.call_fn("div", vec![f64v(1.0), f64v(0.0)]).unwrap(), f64v(f64::INFINITY));
+    assert_eq!(interp.call_fn("div", vec![f64v(-1.0), f64v(0.0)]).unwrap(), f64v(f64::NEG_INFINITY));
+    match interp.call_fn("div", vec![f64v(0.0), f64v(0.0)]).unwrap() {
+        Value::F64(x) => assert!(x.is_nan(), "0/0 must be NaN"),
+        other => panic!("expected NaN, got {:?}", other),
+    }
+    // NaN compares unequal to everything, including itself.
+    let nan = interp.call_fn("div", vec![f64v(0.0), f64v(0.0)]).unwrap();
+    let (n1, n2) = (nan.clone(), nan);
+    assert_eq!(interp.call_fn("eq", vec![n1.clone(), n2.clone()]).unwrap(), Value::Bool(false));
+    assert_eq!(interp.call_fn("neq", vec![n1, n2]).unwrap(), Value::Bool(true));
+}
+
+#[test]
+fn f64_casts_round_trip_and_saturate() {
+    let m = module(FLOATS);
+    let mut interp = Interp::new(&m, 0);
+    assert_eq!(interp.call_fn("of-i", vec![i64v(42)]).unwrap(), f64v(42.0));
+    // Truncation toward zero.
+    assert_eq!(interp.call_fn("to-i", vec![f64v(3.9)]).unwrap(), i64v(3));
+    assert_eq!(interp.call_fn("to-i", vec![f64v(-3.9)]).unwrap(), i64v(-3));
+    // Saturation on overflow, and NaN maps to 0 (matching Rust `as`).
+    assert_eq!(interp.call_fn("to-i", vec![f64v(1e30)]).unwrap(), i64v(i64::MAX));
+    assert_eq!(interp.call_fn("to-i", vec![f64v(-1e30)]).unwrap(), i64v(i64::MIN));
+    assert_eq!(interp.call_fn("to-i", vec![f64v(f64::NAN)]).unwrap(), i64v(0));
+}
+
+#[test]
+fn f64_to_str_uses_the_canonical_deterministic_format() {
+    let m = module(FLOATS);
+    let s = |x: f64| match Interp::new(&m, 0).call_fn("to-str", vec![f64v(x)]).unwrap() {
+        Value::Str(s) => s,
+        other => panic!("expected str, got {:?}", other),
+    };
+    assert_eq!(s(1.5), "1.5000000000000000e+00");
+    assert_eq!(s(0.0), "0.0000000000000000e+00");
+    assert_eq!(s(-0.25), "-2.5000000000000000e-01");
+    assert_eq!(s(f64::INFINITY), "inf");
+    assert_eq!(s(f64::NEG_INFINITY), "-inf");
+    assert_eq!(s(f64::NAN), "NaN");
+    // The interp helper and the display path agree.
+    assert_eq!(aury::interp::format_f64(1.5), "1.5000000000000000e+00");
+}
+
+#[test]
+fn f64_literals_require_a_decimal_point() {
+    // `1.0` is a float; `1` stays an i64; a bare identifier is unaffected.
+    assert_eq!(aury::ast::parse_f64_literal("1.0"), Some(1.0f64.to_bits()));
+    assert_eq!(aury::ast::parse_f64_literal("-2.5"), Some((-2.5f64).to_bits()));
+    assert_eq!(aury::ast::parse_f64_literal("1"), None);
+    assert_eq!(aury::ast::parse_f64_literal("inf"), None);
+    assert_eq!(aury::ast::parse_f64_literal("hello"), None);
+}
+
+#[test]
+fn passing_i64_where_f64_expected_is_rejected_with_a_float_default_repair() {
+    // The literal `1` is an i64; `f64.add` wants f64. The type gate rejects it
+    // and offers the `0.0` default-literal repair.
+    let src = r#"
+(module m
+  (fn f (params (x f64)) (ret f64) (body (call f64.add (ref x) (lit 1)))))"#;
+    let m = module(src);
+    let rejs = match check_module(&m) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected rejection"),
+    };
+    let r = &rejs[0];
+    assert_eq!(r.gate, Gate::Type);
+    assert_eq!(r.kind, "ARG_TYPE_MISMATCH");
+    assert!(r.expected.contains("f64"));
+    assert!(r.received.contains("i64"));
+    assert!(
+        r.repairs.iter().any(|repair| repair.note.contains("0.0")),
+        "a default f64 literal (0.0) repair should be offered, got {:?}",
+        r.repairs.iter().map(|repair| &repair.note).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Track 4: evaluation corpus (repair convergence)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn evaluation_corpus_converges_as_expected() {
+    // The committed corpus is a regression gate: every task's loop outcome must
+    // match its declared expectation, every oracle check must pass, and the
+    // repair loop must genuinely rescue at least one otherwise-broken task
+    // while the intent gate correctly refuses at least one wrong spec.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("eval/corpus.json");
+    let report = aury::eval::run_corpus(&manifest, None).expect("run corpus");
+
+    assert!(report.all_passed(), "corpus regressed:\n{}", report.to_markdown());
+    assert!(report.tasks.len() >= 6, "corpus should be non-trivial");
+
+    // First-shot vs post-repair is the honest baseline: at least one task must
+    // fail first-shot yet be rescued by the loop's mechanical repair.
+    let rescued = report
+        .tasks
+        .iter()
+        .filter(|t| t.accepted && t.patches > 0 && !t.validated_first_shot)
+        .count();
+    assert!(rescued >= 1, "expected at least one task rescued by repair");
+
+    // At least one deliberately-wrong spec must be a true negative (not accepted).
+    let true_negatives = report
+        .tasks
+        .iter()
+        .filter(|t| !t.expect_accept && !t.accepted && t.outcome_as_expected)
+        .count();
+    assert!(true_negatives >= 1, "expected the intent gate to reject a wrong spec");
+
+    // Determinism: a second run with the same seed is identical.
+    let again = aury::eval::run_corpus(&manifest, None).expect("run corpus again");
+    assert_eq!(report.summary(), again.summary(), "eval must be deterministic");
 }

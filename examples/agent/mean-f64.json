@@ -1,0 +1,46 @@
+{
+  "kind": "module",
+  "name": "mean_f64",
+  "items": [
+    {
+      "kind": "fn",
+      "name": "mean",
+      "params": [ { "name": "xs", "type": "(vec f64)" } ],
+      "ret": "f64",
+      "requires": [
+        { "kind": "call", "op": "i64.gt", "args": [ { "kind": "len", "target": { "kind": "ref", "name": "xs" } }, { "kind": "lit", "value": 0 } ] }
+      ],
+      "body": {
+        "kind": "let", "name": "sum", "type": "f64", "init": { "kind": "lit", "value": 0.0 },
+        "body": {
+          "kind": "let", "name": "i", "type": "i64", "init": { "kind": "lit", "value": 0 },
+          "body": {
+            "kind": "loop",
+            "body": {
+              "kind": "if",
+              "cond": { "kind": "call", "op": "i64.ge", "args": [ { "kind": "ref", "name": "i" }, { "kind": "len", "target": { "kind": "ref", "name": "xs" } } ] },
+              "then": {
+                "kind": "break",
+                "value": {
+                  "kind": "call", "op": "f64.div",
+                  "args": [
+                    { "kind": "ref", "name": "sum" },
+                    { "kind": "cast", "type": "f64", "value": { "kind": "len", "target": { "kind": "ref", "name": "xs" } } }
+                  ]
+                }
+              },
+              "else": {
+                "kind": "block",
+                "stmts": [
+                  { "kind": "set", "name": "sum", "value": { "kind": "call", "op": "f64.add", "args": [ { "kind": "ref", "name": "sum" }, { "kind": "idx", "target": { "kind": "ref", "name": "xs" }, "index": { "kind": "ref", "name": "i" } } ] } },
+                  { "kind": "set", "name": "i", "value": { "kind": "call", "op": "i64.add", "args": [ { "kind": "ref", "name": "i" }, { "kind": "lit", "value": 1 } ] } }
+                ],
+                "tail": { "kind": "lit", "value": null }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

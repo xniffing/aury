@@ -258,7 +258,7 @@ fn loop_has_break(e: &Expr) -> bool {
 
 fn is_affine(ty: &Type) -> bool {
     match ty {
-        Type::I64 | Type::Bool | Type::Str | Type::Unit => false,
+        Type::I64 | Type::F64 | Type::Bool | Type::Str | Type::Unit => false,
         Type::Vec(_) | Type::Struct(_) | Type::Ref { .. } | Type::Region => true,
         Type::Result(..) => true,
     }
@@ -690,6 +690,14 @@ impl Checker {
             "i64.neg" | "i64.abs" => (Type::I64, vec![Type::I64]),
             "i64.from_str" | "i64.parse" => (Type::Result(Box::new(Type::I64), Box::new(Type::Str)), vec![Type::Str]),
             "i64.to_str" => (Type::Str, vec![Type::I64]),
+            "f64.add" | "f64.sub" | "f64.mul" | "f64.div" => {
+                (Type::F64, vec![Type::F64, Type::F64])
+            }
+            "f64.gt" | "f64.lt" | "f64.ge" | "f64.le" | "f64.eq" | "f64.neq" => {
+                (Type::Bool, vec![Type::F64, Type::F64])
+            }
+            "f64.neg" | "f64.abs" => (Type::F64, vec![Type::F64]),
+            "f64.to_str" => (Type::Str, vec![Type::F64]),
             "bool.and" | "bool.or" => (Type::Bool, vec![Type::Bool, Type::Bool]),
             "bool.not" => (Type::Bool, vec![Type::Bool]),
             "bool.eq" => (Type::Bool, vec![Type::Bool, Type::Bool]),
@@ -806,6 +814,10 @@ impl Checker {
             || (matches!(from, Type::I64) && matches!(to, Type::I64))
             || (matches!(from, Type::Str) && matches!(to, Type::I64))
             || (matches!(from, Type::I64) && matches!(to, Type::Str))
+            // Numeric casts both directions, plus f64 -> str formatting.
+            || (matches!(from, Type::I64) && matches!(to, Type::F64))
+            || (matches!(from, Type::F64) && matches!(to, Type::I64))
+            || (matches!(from, Type::F64) && matches!(to, Type::Str))
     }
 
     // ===== rejection builders =====
@@ -1325,6 +1337,7 @@ self.rejections.push(Rejection {
 fn lit_type(l: &Lit) -> Type {
     match l {
         Lit::I64(_) => Type::I64,
+        Lit::F64(_) => Type::F64,
         Lit::Bool(_) => Type::Bool,
         Lit::Str(_) => Type::Str,
         Lit::Unit => Type::Unit,
@@ -1391,6 +1404,7 @@ fn known_conversion(from: &Type, to: &Type) -> Option<String> {
 fn default_literal(ty: &Type) -> Option<String> {
     match ty {
         Type::I64 => Some("0".into()),
+        Type::F64 => Some("0.0".into()),
         Type::Bool => Some("false".into()),
         Type::Str => Some("\"\"".into()),
         Type::Unit => Some("unit".into()),

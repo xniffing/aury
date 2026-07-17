@@ -102,6 +102,10 @@ pub fn parse_cli_value(module: &Module, ty: &Type, text: &str) -> Result<Value, 
             .parse::<i64>()
             .map(Value::I64)
             .map_err(|_| format!("`{}` is not an i64", text)),
+        Type::F64 => text
+            .parse::<f64>()
+            .map(Value::F64)
+            .map_err(|_| format!("`{}` is not an f64", text)),
         Type::Bool => match text {
             "true" => Ok(Value::Bool(true)),
             "false" => Ok(Value::Bool(false)),
@@ -125,6 +129,10 @@ fn parse_json_value(module: &Module, ty: &Type, json: &Json) -> Result<Value, St
             .as_i64()
             .map(Value::I64)
             .ok_or_else(|| format!("expected JSON i64, got {}", json)),
+        Type::F64 => json
+            .as_f64()
+            .map(Value::F64)
+            .ok_or_else(|| format!("expected JSON f64, got {}", json)),
         Type::Bool => json
             .as_bool()
             .map(Value::Bool)
@@ -204,6 +212,7 @@ fn parse_json_value(module: &Module, ty: &Type, json: &Json) -> Result<Value, St
 pub fn show_value(value: &Value) -> String {
     match value {
         Value::I64(number) => number.to_string(),
+        Value::F64(number) => crate::interp::format_f64(*number),
         Value::Bool(boolean) => boolean.to_string(),
         Value::Str(string) => format!("{:?}", string),
         Value::Unit => "unit".into(),

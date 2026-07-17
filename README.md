@@ -187,6 +187,7 @@ operator precedence to recover.
 
 ```text
 i64
+f64
 bool
 str
 unit
@@ -225,6 +226,8 @@ region
 
 - **Integer:** `add`, `sub`, `mul`, `div`, `mod`, comparisons, `neg`, `abs`,
   `to_str`, and `parse`/`from_str`
+- **Float:** `f64.add`, `sub`, `mul`, `div`, comparisons, `neg`, `abs`, and
+  `to_str`; `i64`↔`f64` and `f64`→`str` via `cast`
 - **Boolean:** `and`, `or`, `not`, and equality
 - **String:** equality, inequality, concatenation, and length
 - **Result:** `is_ok`
@@ -237,7 +240,13 @@ Aury semantics are defined before LLVM lowering:
 - integer addition, subtraction, multiplication, negation, and absolute value
   wrap in two’s-complement arithmetic;
 - `i64::MIN / -1` and the corresponding remainder have defined behavior;
-- division or remainder by zero traps;
+- integer division or remainder by zero traps;
+- `f64` arithmetic is IEEE-754 and **never traps**: `f64.div` by zero yields
+  `±inf` (or `NaN` for `0.0/0.0`), every ordered comparison with `NaN` is false,
+  and `f64.neq` with `NaN` is true; floats render in a canonical
+  17-significant-digit scientific form (`1.5` → `1.5000000000000000e+00`,
+  plus `NaN`/`inf`/`-inf`) that is byte-identical across interpreter, native,
+  and wasm — `f64`→`i64` casts truncate toward zero and saturate (`NaN`→0);
 - vector indices are bounds checked and trap on negative or excessive indices;
 - RNG uses seeded SplitMix64, so identical seed and execution order produce
   identical values;
@@ -700,10 +709,48 @@ LLVM. The observable native result must equal the interpreter result. This
 turns the interpreter into an executable semantics and makes backend drift a
 test failure.
 
+### Repair convergence corpus
+
+`aury eval eval/corpus.json` runs the same closed loop an agent uses over a
+corpus of `(intent, program)` tasks and reports, per task and in aggregate:
+whether the initial program passed type **and** intent checks with zero repairs
+(*first-shot*), whether the loop reached an accepted state and after how many
+mechanical patches, and whether concrete reference-oracle checks confirm correct
+behavior. Tasks whose spec is deliberately wrong assert the opposite outcome —
+the loop must *refuse* to accept. The run is deterministic (fixed seed) and is a
+`cargo test` gate (`evaluation_corpus_converges_as_expected`).
+
+The honest baseline this answers is **first-shot vs post-repair** — how many
+tasks the loop rescues that would otherwise be rejected — over the v0.1 language
+range (contracts, mutable loops, `f64`):
+
+| Task | First-shot | Loop | Patches | Oracle |
+|------|:----------:|:----:|:-------:|:------:|
+| gcd | ✓ | ✓ | 0 | 2/2 |
+| loop-factorial | ✓ | ✓ | 0 | 2/2 |
+| mean-f64 | ✓ | ✓ | 0 | 1/1 |
+| parse-classify | ✓ | ✓ | 0 | 2/2 |
+| dice-effect | ✓ | ✓ | 0 | — |
+| calculator | ✓ | ✓ | 0 | 3/3 |
+| unterminated | parse✗ | ✓ | 1 | 1/1 |
+| false-property | intent✗ | ø (rejected) | 0 | — |
+
+**8/8 outcomes as expected** · 7 first-shot-valid · 1 rescued by repair (a
+paren-deficit program the parse-repair closes into the correct program) · 1
+deliberately-wrong spec correctly rejected by the intent gate · 11/11 oracle
+checks. Regenerate the table and a CSV with
+`aury eval eval/corpus.json --md eval/report.md --csv eval/report.csv`.
+
+The corpus is intentionally small and its programs are curated (so most pass
+first-shot); it demonstrates the loop's mechanics and the intent gate end to
+end, not a large-sample success rate.
+
 ### What has not yet been measured
 
-- first-shot generation success against Python, Rust, or a baseline IR;
-- repair-loop convergence rates over a representative intent corpus;
+- first-shot generation success against Python, Rust, or a baseline IR (the
+  corpus above measures repair convergence *within* Aury, not a cross-language
+  comparison — that requires running another toolchain and a matched task set);
+- repair-loop convergence at scale over a large, uncurated intent corpus;
 - semantic preservation under large-program optimization;
 - user comprehension of generated properties;
 - performance relative to handwritten implementations;
@@ -783,8 +830,10 @@ src/interp.rs              reference interpreter
 src/value_io.rs            typed CLI JSON parsing and deterministic display
 src/lower.rs               static LLVM lowering and native entry generation
 src/lower_sketch.rs        structural MLIR preview
+src/eval.rs                evaluation harness (repair convergence over a corpus)
 src/main.rs                command-line interface and embedded-runtime driver
 
+eval/corpus.json           evaluation corpus: (intent, program, oracle) tasks
 tests/integration.rs       end-to-end and differential regression suite
 tests/native_parity.aury   aggregate/RNG/control-flow parity fixture
 
@@ -807,6 +856,8 @@ iteration. It demonstrates that a repair-oriented language can be executed end
 to end—from structured generation and validation through intent checks and a
 native LLVM backend—while keeping its unimplemented claims explicit.
 
-The next meaningful milestone is not a larger syntax. It is an evaluation
-corpus that measures repair convergence, specification quality, and accepted
-program reliability against credible baselines.
+A first evaluation corpus now exists (`aury eval eval/corpus.json`, see
+[Evaluation](#evaluation-and-evidence)): it measures repair convergence and
+intent-gate behavior end to end over the v0.1 language range. The next
+meaningful milestone is to scale it — a larger, uncurated task set with a
+first-shot success rate and a controlled cross-language baseline.
