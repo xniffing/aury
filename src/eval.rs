@@ -53,6 +53,12 @@ pub struct Task {
     pub program: PathBuf,
     pub expect_accept: bool,
     pub checks: Vec<OracleCheck>,
+    /// Optional path to an independent reference implementation (a Python
+    /// script) run against the *same* oracle checks. This measures cross-
+    /// *implementation agreement* — does a hand-written program in another
+    /// language compute the same outputs — NOT first-shot generation
+    /// reliability, which would require model-generated programs on both sides.
+    pub baseline: Option<PathBuf>,
 }
 
 /// Per-task measurement.
@@ -79,6 +85,12 @@ pub struct TaskReport {
     pub outcome_as_expected: bool,
     pub checks_total: usize,
     pub checks_passed: usize,
+    /// Cross-implementation agreement: how many oracle checks a reference
+    /// implementation (Python) reproduced. `baseline_available` is false when no
+    /// baseline is declared or the interpreter is missing (checks then skipped).
+    pub baseline_available: bool,
+    pub baseline_total: usize,
+    pub baseline_passed: usize,
     /// Short human-readable note (first failure reason, or a status).
     pub note: String,
 }
@@ -192,6 +204,9 @@ pub fn run_task(task: &Task, seed: u64) -> TaskReport {
         outcome_as_expected: false,
         checks_total: task.checks.len(),
         checks_passed: 0,
+        baseline_available: false,
+        baseline_total: 0,
+        baseline_passed: 0,
         note: String::new(),
     };
 
@@ -265,7 +280,54 @@ pub fn run_task(task: &Task, seed: u64) -> TaskReport {
             };
         }
     }
+
+    // Cross-implementation agreement: does an independent reference reproduce the
+    // same oracle outputs? Measures agreement, not generation reliability.
+    if let Some(script) = &task.baseline {
+        let (available, passed, total) = run_baseline(script, &task.checks);
+        report.baseline_available = available;
+        report.baseline_passed = passed;
+        report.baseline_total = total;
+    }
     report
+}
+
+/// Run a reference implementation (Python) against the oracle checks and count
+/// how many outputs it reproduces. The script is invoked as
+/// `python3 <script> <fn_name> <arg…>` and must print the result formatted
+/// exactly as Aury's `show_value` would. Returns `(available, passed, total)`;
+/// `available` is false (and the checks are skipped, never failed) when no
+/// interpreter is on PATH, so the harness stays hermetic.
+fn run_baseline(script: &Path, checks: &[OracleCheck]) -> (bool, usize, usize) {
+    if checks.is_empty() {
+        return (false, 0, 0);
+    }
+    // Probe for a Python interpreter once; skip gracefully if absent.
+    let have_python = std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !have_python {
+        return (false, 0, 0);
+    }
+    let mut passed = 0usize;
+    for check in checks {
+        let out = std::process::Command::new("python3")
+            .arg(script)
+            .arg(&check.fn_name)
+            .args(&check.args)
+            .output();
+        if let Ok(out) = out {
+            if out.status.success() {
+                let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if got == check.expect {
+                    passed += 1;
+                }
+            }
+        }
+    }
+    (true, passed, checks.len())
 }
 
 /// Parse the corpus manifest and resolve program paths relative to it.
@@ -321,12 +383,17 @@ pub fn load_corpus(manifest_path: &Path) -> Result<(u64, Vec<Task>), String> {
                 });
             }
         }
+        let baseline = t
+            .get("baseline")
+            .and_then(|v| v.as_str())
+            .map(|p| base.join(p));
         tasks.push(Task {
             name: name.to_string(),
             intent: intent.to_string(),
             program: base.join(program),
             expect_accept,
             checks,
+            baseline,
         });
     }
     Ok((seed, tasks))
@@ -370,11 +437,13 @@ impl CorpusReport {
         let repaired = self.count(|t| t.accepted && t.patches > 0);
         let checks_total: usize = self.tasks.iter().map(|t| t.checks_total).sum();
         let checks_passed: usize = self.tasks.iter().map(|t| t.checks_passed).sum();
+        let base_total: usize = self.tasks.iter().map(|t| t.baseline_total).sum();
+        let base_passed: usize = self.tasks.iter().map(|t| t.baseline_passed).sum();
         format!(
             "{}/{} tasks: outcome-as-expected={}, first-shot-valid={}, accepted={}, \
-             rescued-by-repair={}, oracle-checks={}/{} (seed=0x{:X})",
+             rescued-by-repair={}, oracle-checks={}/{}, xlang-agreement={}/{} (seed=0x{:X})",
             expected, n, expected, first_shot, accepted, repaired, checks_passed, checks_total,
-            self.seed
+            base_passed, base_total, self.seed
         )
     }
 
@@ -458,6 +527,33 @@ impl CorpusReport {
             out.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
                 gate, fails, converged, rejected_ok
+            ));
+        }
+        // Cross-implementation agreement (if any task carries a reference impl).
+        let base_total: usize = self.tasks.iter().map(|t| t.baseline_total).sum();
+        if base_total > 0 {
+            let base_passed: usize = self.tasks.iter().map(|t| t.baseline_passed).sum();
+            let tasks_with: Vec<&str> = self
+                .tasks
+                .iter()
+                .filter(|t| t.baseline_available)
+                .map(|t| t.name.as_str())
+                .collect();
+            out.push_str(&format!(
+                "\n### Cross-implementation agreement\n\n\
+                 An independent Python reference, run against the *same* oracle \
+                 inputs, reproduced **{}/{}** outputs ({}). This measures whether \
+                 a hand-written program in another language computes the same \
+                 results — cross-implementation *agreement*, not first-shot \
+                 generation reliability (which would require model-generated \
+                 programs on both sides, out of scope for this harness).\n",
+                base_passed,
+                base_total,
+                if tasks_with.is_empty() {
+                    "no Python interpreter available — skipped".to_string()
+                } else {
+                    format!("tasks: {}", tasks_with.join(", "))
+                },
             ));
         }
         out

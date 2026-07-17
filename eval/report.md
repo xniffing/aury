@@ -31,3 +31,7 @@ Columns: **First-shot** = the model's initial program passed type + intent check
 | effect | 1 | 1 | 0 |
 | region | 2 | 2 | 0 |
 | intent | 1 | 0 | 1 |
+
+### Cross-implementation agreement
+
+An independent Python reference, run against the *same* oracle inputs, reproduced **5/5** outputs (tasks: gcd, calculator). This measures whether a hand-written program in another language computes the same results — cross-implementation *agreement*, not first-shot generation reliability (which would require model-generated programs on both sides, out of scope for this harness).

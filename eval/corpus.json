@@ -6,6 +6,7 @@
       "name": "gcd",
       "intent": "Euclid's GCD of two non-negative integers; commutative, and divides both inputs.",
       "program": "../examples/agent/gcd.json",
+      "baseline": "baseline/gcd.py",
       "checks": [
         { "fn": "gcd", "args": ["48", "36"], "expect": "12" },
         { "fn": "gcd", "args": ["17", "5"], "expect": "1" }
@@ -81,6 +82,7 @@
       "name": "calculator",
       "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
       "program": "../projects/calculator/calculator.json",
+      "baseline": "baseline/calculator.py",
       "checks": [
         { "fn": "factorial", "args": ["5"], "expect": "120" },
         { "fn": "add", "args": ["3", "4"], "expect": "7" },

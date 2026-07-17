@@ -217,4 +217,13 @@
         (let a (vec i64) (vec-push (copy base) (lit 100))
           (let b (vec i64) (vec-push (copy base) (lit 200))
             (call i64.add (len (ref a)) (len (ref b))))))))
+  ; --- v0.2 Track C1b: arena-managed region (scalar result, no escape) ---
+  ; builds a scratch vector inside a region and reduces it to a scalar; the
+  ; region frees the scratch at exit. The observable result is unchanged.
+  (fn region-scalar (params (n i64)) (ret i64)
+    (body
+      (region r
+        (call i64.add
+          (len (vec-new (vec i64) (ref n) (ref n) (ref n)))
+          (ref n)))))
 )
