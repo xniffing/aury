@@ -113,12 +113,58 @@ impl Interp {
                 args.len()
             )));
         }
+        self.invoke_fn(&f, args)
+    }
+
+    /// Run a function's body with its contracts enforced: preconditions are
+    /// checked on entry (parameters in scope) and postconditions on exit
+    /// (parameters plus the `result` binding in scope). A violated contract
+    /// traps like any other runtime error, so contract failures surface both
+    /// here and through the intent gate ([`crate::spec`]).
+    fn invoke_fn(&mut self, f: &FnDef, args: Vec<Value>) -> Result<Value, InterpError> {
         let mut scope = HashMap::new();
         for (p, a) in f.params.iter().zip(args.into_iter()) {
             scope.insert(p.name.clone(), a);
         }
-        match self.eval(&f.body, &mut scope)? {
-            Flow::Value(v) | Flow::Return(v) => Ok(v),
+        for (i, req) in f.requires.iter().enumerate() {
+            if !self.eval_predicate(req, &mut scope)? {
+                return Err(InterpError(format!(
+                    "precondition violated in `{}` (requires clause #{})",
+                    f.name,
+                    i + 1
+                )));
+            }
+        }
+        let ret = match self.eval(&f.body, &mut scope)? {
+            Flow::Value(v) | Flow::Return(v) => v,
+        };
+        if !f.ensures.is_empty() {
+            scope.insert(RESULT_BINDING.to_string(), ret.clone());
+            for (i, ens) in f.ensures.iter().enumerate() {
+                if !self.eval_predicate(ens, &mut scope)? {
+                    return Err(InterpError(format!(
+                        "postcondition violated in `{}` (ensures clause #{})",
+                        f.name,
+                        i + 1
+                    )));
+                }
+            }
+        }
+        Ok(ret)
+    }
+
+    /// Evaluate a contract expression that must yield a boolean.
+    fn eval_predicate(
+        &mut self,
+        e: &Expr,
+        scope: &mut HashMap<String, Value>,
+    ) -> Result<bool, InterpError> {
+        match self.eval(e, scope)? {
+            Flow::Value(Value::Bool(b)) | Flow::Return(Value::Bool(b)) => Ok(b),
+            Flow::Value(other) | Flow::Return(other) => Err(InterpError(format!(
+                "contract expression is not bool: {:?}",
+                other
+            ))),
         }
     }
 
@@ -345,13 +391,7 @@ impl Interp {
                         args.len()
                     )));
                 }
-                let mut scope = HashMap::new();
-                for (p, a) in f.params.iter().zip(args.into_iter()) {
-                    scope.insert(p.name.clone(), a);
-                }
-                match self.eval(&f.body, &mut scope)? {
-                    Flow::Value(v) | Flow::Return(v) => v,
-                }
+                self.invoke_fn(&f, args)?
             }
         };
         Ok(r)

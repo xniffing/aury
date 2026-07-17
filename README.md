@@ -121,6 +121,7 @@ algorithms, transformations, and small tools.
 | Seeded property testing | Implemented |
 | Counterexample shrinking | Implemented |
 | Structural vacuity detection | Implemented |
+| Executable function contracts (`requires`/`ensures`) | Implemented (runtime + intent gate) |
 | Tree-walking interpreter | Implemented |
 | Static, type-aware LLVM lowering | Implemented |
 | Native vectors, structs, results, strings, and RNG | Implemented |
@@ -350,6 +351,35 @@ The vacuity check is intentionally conservative and structural. A property
 that exercises a function and always passes may be a correct invariant; random
 attempts to make it fail cannot distinguish correctness from vacuity.
 
+### Function contracts
+
+Functions may also carry executable **preconditions and postconditions** as
+`requires`/`ensures` clauses between the effect row and the body. `ensures`
+binds the reserved name `result` to the return value:
+
+```scheme
+(fn abs (params (x i64)) (ret i64)
+  (ensures (call i64.ge (ref result) (lit 0)))
+  (body (if (call i64.lt (ref x) (lit 0)) (call i64.neg (ref x)) (ref x))))
+```
+
+Contracts are enforced two ways:
+
+1. **Runtime enforcement** — the interpreter checks `requires` on entry and
+   `ensures` on exit; a violation traps like any other runtime error, so it
+   surfaces on every concrete execution (`aury run`).
+2. **Intent gate** — `aury test`/`aury loop` actively generate inputs, keep
+   those satisfying the preconditions, run the function, and report any
+   postcondition violation as a shrunk, in-domain counterexample that re-enters
+   the repair loop (gate `contract`, kind `POSTCONDITION_FALSIFIED`).
+
+The type gate additionally requires each clause to be a pure `bool` predicate
+(`CONTRACT_NOT_BOOL` / `CONTRACT_IMPURE`), and a postcondition that never
+references `result` is flagged `VACUOUS_CONTRACT`. `result` is in scope only for
+`ensures`, so using it in a `requires` clause is an ordinary unbound reference.
+Implication checking and SMT discharge remain future work; v0.1 contracts are
+executable runtime assertions, not proofs.
+
 ### Intent boundary
 
 Passing properties proves only that the implementation satisfies those
@@ -358,8 +388,10 @@ the user’s full intent. Wrong specifications remain possible. Aury makes the
 specification executable, inspectable, reproducible, and harder to make
 trivially meaningless; the user remains the final oracle.
 
-Contract forms are represented in the AST, but full contract execution,
-implication checking, and SMT discharge remain future work.
+Executable contracts close part of this gap by making the specification run on
+every execution, but a passing contract is still only evidence over the tested
+and concretely-executed inputs, not a proof. Implication checking and SMT
+discharge remain future work.
 
 ---
 
@@ -541,7 +573,7 @@ $AURY compile projects/calculator/calculator.repaired.aury gcd 48 36 -o /tmp/aur
 aury validate <file>             run type/effect/region validation
 aury json <file>                 emit one JSON rejection per line
 aury run <file> <fn> [args...]  execute with the interpreter
-aury test <file> [seed]          run seeded properties and shrinking
+aury test <file> [seed]          run seeded properties + contracts and shrinking
 aury loop <file> [seed]          run the closed repair loop
 aury lower <file>                print the structural MLIR sketch
 aury ll <file> [out.ll]          emit validated LLVM IR
@@ -656,9 +688,11 @@ aliasing, or deallocation guarantees that it has not implemented.
 
 ### Contracts and proof
 
-Contract nodes are parsed, but full runtime assertion wiring, implication
-checking, and SMT proof are incomplete. Property testing is evidence over
-sampled inputs, not formal verification.
+Function contracts (`requires`/`ensures`) are executable: they are enforced as
+runtime assertions and actively exercised by the intent gate. Implication
+checking and SMT proof are not implemented. Both property testing and contract
+testing are evidence over sampled (and concretely executed) inputs, not formal
+verification.
 
 ### Effects and capabilities
 

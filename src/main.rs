@@ -17,7 +17,8 @@ USAGE:
 COMMANDS:
   validate <file>            Run type/effect/region checks; print rejections as JSON.
   run <file> <fn> [args...]  Validate then run <fn>; composites use typed JSON args.
-  test <file> [seed]         Validate then run property tests with shrinking + vacuity check.
+  test <file> [seed]         Validate then run property + contract tests with shrinking
+                            and vacuity checks.
   loop <file> [seed]         Run the closed repair loop: validate → apply admissible
                             patches → re-validate, until accept or budget exhaustion.
   lower <file>               Print the MLIR lowering sketch (structural preview).
@@ -206,14 +207,21 @@ fn cmd_test(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::from(1));
     }
     let failures = aury::spec::run_property_tests(&m, seed, 128);
-    if failures.is_empty() {
-        println!("all property tests pass (seed={})", seed);
+    let contract_failures = aury::spec::run_contract_tests(&m, seed, 128);
+    if failures.is_empty() && contract_failures.is_empty() {
+        println!("all property and contract tests pass (seed={})", seed);
         Ok(ExitCode::SUCCESS)
     } else {
-        println!("{} property test failure(s):", failures.len());
+        println!(
+            "{} property + {} contract test failure(s):",
+            failures.len(),
+            contract_failures.len()
+        );
         for f in &failures {
-            let rej = aury::spec::failure_to_rejection(f);
-            println!("{}", rej.to_json());
+            println!("{}", aury::spec::failure_to_rejection(f).to_json());
+        }
+        for f in &contract_failures {
+            println!("{}", aury::spec::contract_failure_to_rejection(f).to_json());
         }
         Ok(ExitCode::from(1))
     }

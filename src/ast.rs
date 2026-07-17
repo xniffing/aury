@@ -35,8 +35,18 @@ pub struct FnDef {
     pub params: Vec<Param>,
     pub ret: Type,
     pub effects: EffectRow,
+    /// Preconditions: bool expressions over the parameters, checked on entry.
+    /// Multiple clauses are conjoined. See [`crate::spec`] for enforcement.
+    pub requires: Vec<Expr>,
+    /// Postconditions: bool expressions over the parameters plus the special
+    /// binding `result` (the return value), checked on exit. Conjoined.
+    pub ensures: Vec<Expr>,
     pub body: Expr,
 }
+
+/// The reserved name bound to a function's return value inside `ensures`
+/// expressions.
+pub const RESULT_BINDING: &str = "result";
 
 #[derive(Clone, Debug)]
 pub struct Param {
@@ -289,6 +299,25 @@ fn build_fn(s: &Sexpr) -> Result<FnDef, String> {
         effects = EffectRow::parse(&xs[idx])?;
         idx += 1;
     }
+    // Contract clauses: zero or more (requires E) / (ensures E) between the
+    // effect row and the body. Order-independent; multiple clauses conjoin.
+    let mut requires = Vec::new();
+    let mut ensures = Vec::new();
+    while let Some(head) = xs.get(idx).and_then(|x| x.head()) {
+        match head {
+            "requires" => {
+                let e = xs[idx].list().ok_or("requires list")?.get(1).ok_or("requires expr")?;
+                requires.push(build_expr(e)?);
+                idx += 1;
+            }
+            "ensures" => {
+                let e = xs[idx].list().ok_or("ensures list")?.get(1).ok_or("ensures expr")?;
+                ensures.push(build_expr(e)?);
+                idx += 1;
+            }
+            _ => break,
+        }
+    }
     if xs.get(idx).and_then(|x| x.head()) != Some("body") {
         return Err("fn needs a body".into());
     }
@@ -301,6 +330,8 @@ fn build_fn(s: &Sexpr) -> Result<FnDef, String> {
         params,
         ret,
         effects,
+        requires,
+        ensures,
         body,
     })
 }

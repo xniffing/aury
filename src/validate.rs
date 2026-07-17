@@ -154,6 +154,18 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
             if !f.effects.admits(&body_effects) {
                 c.reject_effect(&f.body.id(), &f.effects, &body_effects);
             }
+            // Contract gate: requires/ensures must be pure boolean predicates
+            // over the parameters (and `result`, for ensures). Names outside
+            // that scope surface as ordinary UNBOUND_REF rejections, so using
+            // `result` in a `requires` clause is rejected automatically.
+            for req in &f.requires {
+                let mut cscope = contract_scope(f, false);
+                c.check_contract(req, &mut cscope, "requires");
+            }
+            for ens in &f.ensures {
+                let mut cscope = contract_scope(f, true);
+                c.check_contract(ens, &mut cscope, "ensures");
+            }
             total.extend(c.rejections);
         }
     }
@@ -169,6 +181,38 @@ fn region_of(ty: &Type) -> Option<&str> {
         Type::Ref { region, .. } => Some(region),
         _ => None,
     }
+}
+
+/// Build the checking scope for a contract clause: the function's parameters,
+/// plus the `result` binding (bound to the return type) when `with_result` is
+/// set (i.e. for `ensures`).
+fn contract_scope(f: &FnDef, with_result: bool) -> HashMap<String, Binding> {
+    let mut scope = HashMap::new();
+    for p in &f.params {
+        scope.insert(
+            p.name.clone(),
+            Binding {
+                ty: p.ty.clone(),
+                affine: is_affine(&p.ty),
+                moved: false,
+                region: region_of(&p.ty).map(|s| s.to_string()),
+                is_cap: p.is_cap,
+            },
+        );
+    }
+    if with_result {
+        scope.insert(
+            RESULT_BINDING.to_string(),
+            Binding {
+                ty: f.ret.clone(),
+                affine: is_affine(&f.ret),
+                moved: false,
+                region: region_of(&f.ret).map(|s| s.to_string()),
+                is_cap: false,
+            },
+        );
+    }
+    scope
 }
 
 fn is_affine(ty: &Type) -> bool {
@@ -506,6 +550,20 @@ impl Checker {
                 }
                 target.clone()
             }
+        }
+    }
+
+    /// Check one contract clause: it must be a pure boolean predicate. Scoping
+    /// (only params, plus `result` for ensures) is enforced by `check_expr`'s
+    /// ordinary unbound-reference reporting.
+    fn check_contract(&mut self, e: &Expr, scope: &mut HashMap<String, Binding>, which: &str) {
+        let t = self.check_expr(e, scope, None);
+        if !self.diverges(e) && !self.types_agree(&t, &Type::Bool) {
+            self.reject_contract_not_bool(e.id(), which, &t);
+        }
+        let eff = self.collect_effects(e);
+        if !eff.pure {
+            self.reject_contract_impure(e.id(), which);
         }
     }
 
@@ -1043,6 +1101,48 @@ self.rejections.push(Rejection {
             path: "get".into(),
             expected: "(struct Name)".into(),
             received: format!("{:?}", ty),
+            context: HashMap::new(),
+            repairs: vec![],
+        });
+    }
+
+    fn reject_contract_not_bool(&mut self, id: NodeId, which: &str, received: &Type) {
+        let rid = self.next_repair_id();
+        self.rejections.push(Rejection {
+            gate: Gate::Contract,
+            kind: "CONTRACT_NOT_BOOL".into(),
+            node: id,
+            path: which.into(),
+            expected: "bool".into(),
+            received: format!("{:?}", received),
+            context: HashMap::new(),
+            repairs: vec![Repair {
+                id: rid,
+                action: "replace_node".into(),
+                with: Some(Sexpr::Atom("true".into())),
+                cost: 3,
+                preserves_effects: true,
+                preserves_contracts: false,
+                propagates: vec![],
+                note: format!(
+                    "A `{}` clause must be a bool predicate. Replace it with a \
+                     boolean expression over the parameters{}. (The default \
+                     `true` type-checks but disables the check.)",
+                    which,
+                    if which == "ensures" { " and `result`" } else { "" }
+                ),
+            }],
+        });
+    }
+
+    fn reject_contract_impure(&mut self, id: NodeId, which: &str) {
+        self.rejections.push(Rejection {
+            gate: Gate::Contract,
+            kind: "CONTRACT_IMPURE".into(),
+            node: id,
+            path: which.into(),
+            expected: "a pure, deterministic predicate".into(),
+            received: "clause calls an effectful op (e.g. rng.*)".into(),
             context: HashMap::new(),
             repairs: vec![],
         });

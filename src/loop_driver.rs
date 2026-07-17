@@ -18,7 +18,9 @@
 use crate::ast::{build_module, Module};
 use crate::repair::{Rejection, ValidationOutcome};
 use crate::sexpr::{parse, Sexpr};
-use crate::spec::{failure_to_rejection, run_property_tests};
+use crate::spec::{
+    contract_failure_to_rejection, failure_to_rejection, run_contract_tests, run_property_tests,
+};
 use crate::validate::check_module;
 
 /// Per-node repair budget. If a node is rejected with the same kind twice,
@@ -100,9 +102,21 @@ pub fn repair_loop(source: &str, run_tests: bool, seed: u64) -> LoopResult {
         match outcome {
             ValidationOutcome::Accepted => {
                 if run_tests {
-                    let failures = run_property_tests(&module, seed, 64);
-                    if failures.is_empty() {
-                        log.push("accepted: type/effect/region checks pass; property tests pass".into());
+                    let mut rejs: Vec<Rejection> = run_property_tests(&module, seed, 64)
+                        .iter()
+                        .map(failure_to_rejection)
+                        .collect();
+                    rejs.extend(
+                        run_contract_tests(&module, seed, 64)
+                            .iter()
+                            .map(contract_failure_to_rejection),
+                    );
+                    if rejs.is_empty() {
+                        log.push(
+                            "accepted: type/effect/region checks pass; property and contract \
+                             tests pass"
+                                .into(),
+                        );
                         return LoopResult {
                             source: current,
                             accepted: true,
@@ -112,15 +126,13 @@ pub fn repair_loop(source: &str, run_tests: bool, seed: u64) -> LoopResult {
                             log,
                         };
                     } else {
-                        let rejs: Vec<Rejection> =
-                            failures.iter().map(failure_to_rejection).collect();
                         log.push(format!(
-                            "property test failures: {} — feeding back as repair signal",
+                            "intent-gate failures: {} — feeding back as repair signal",
                             rejs.len()
                         ));
-                        // Property-test failures are NOT mechanically patchable
-                        // in v0 (they require the model to decide impl-vs-spec).
-                        // We surface them and stop.
+                        // Intent-gate failures (property or contract) are NOT
+                        // mechanically patchable in v0: they require the model to
+                        // decide impl-vs-spec. We surface them and stop.
                         return LoopResult {
                             source: current,
                             accepted: false,
@@ -330,8 +342,12 @@ fn final_rejections(source: &str, run_tests: bool, seed: u64) -> Vec<Rejection> 
         ValidationOutcome::Rejected(r) => r,
     };
     if run_tests {
-        let failures = run_property_tests(&module, seed, 64);
-        rejs.extend(failures.iter().map(failure_to_rejection));
+        rejs.extend(run_property_tests(&module, seed, 64).iter().map(failure_to_rejection));
+        rejs.extend(
+            run_contract_tests(&module, seed, 64)
+                .iter()
+                .map(contract_failure_to_rejection),
+        );
     }
     rejs
 }

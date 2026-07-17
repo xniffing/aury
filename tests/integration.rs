@@ -671,3 +671,175 @@ fn aggregate_value_io_rejects_malformed_values() {
         );
     }
 }
+
+// ===========================================================================
+// Track 1: executable contracts (requires / ensures).
+// ===========================================================================
+
+/// Find a function definition by name in a module.
+fn fn_def<'a>(m: &'a aury::ast::Module, name: &str) -> &'a aury::ast::FnDef {
+    m.items
+        .iter()
+        .find_map(|it| match it {
+            aury::ast::ModuleItem::Fn(f) if f.name == name => Some(f),
+            _ => None,
+        })
+        .expect("function present")
+}
+
+#[test]
+fn ensures_is_enforced_at_runtime_and_caught_by_intent_gate() {
+    // `abs` claims (ensures result >= 0) but returns x unchanged — a bug that
+    // is invisible to the type checker and only the contract catches.
+    let buggy = r#"
+(module m
+  (fn abs (params (x i64)) (ret i64)
+    (ensures (call i64.ge (ref result) (lit 0)))
+    (body (ref x))))"#;
+    let m = module(buggy);
+    // Structurally valid: the contract gate is about intent, not types.
+    assert!(check_module(&m).is_accepted(), "buggy abs still type-checks");
+    assert_eq!(fn_def(&m, "abs").ensures.len(), 1, "ensures clause parsed");
+
+    // Runtime enforcement: a negative input trips the postcondition.
+    let mut interp = Interp::new(&m, 0);
+    assert!(
+        interp.call_fn("abs", vec![i64v(-5)]).is_err(),
+        "postcondition must trap at runtime for x < 0"
+    );
+
+    // Intent gate: run_contract_tests finds and shrinks the counterexample.
+    let failures = aury::spec::run_contract_tests(&m, 12345, 128);
+    assert_eq!(failures.len(), 1, "postcondition must be falsified");
+    assert!(!failures[0].vacuous);
+    // The bug fails for every x < 0, so the minimal counterexample is exactly
+    // x = -1 — shrinking must reach it and not drift to a larger magnitude.
+    assert_eq!(failures[0].counterexample, vec![("x".to_string(), i64v(-1))]);
+    let rej = aury::spec::contract_failure_to_rejection(&failures[0]);
+    assert_eq!(rej.gate, Gate::Contract);
+    assert_eq!(rej.kind, "POSTCONDITION_FALSIFIED");
+}
+
+#[test]
+fn correct_impl_satisfies_its_contract() {
+    let good = r#"
+(module m
+  (fn abs (params (x i64)) (ret i64)
+    (ensures (call i64.ge (ref result) (lit 0)))
+    (body (if (call i64.lt (ref x) (lit 0)) (call i64.neg (ref x)) (ref x)))))"#;
+    let m = module(good);
+    assert!(check_module(&m).is_accepted());
+    // Runtime: contract holds for both signs.
+    let mut interp = Interp::new(&m, 0);
+    assert_eq!(interp.call_fn("abs", vec![i64v(-5)]).unwrap(), i64v(5));
+    assert_eq!(interp.call_fn("abs", vec![i64v(7)]).unwrap(), i64v(7));
+    // Intent gate: no failures.
+    assert!(aury::spec::run_contract_tests(&m, 12345, 128).is_empty());
+}
+
+#[test]
+fn requires_filters_out_of_domain_inputs() {
+    // safe_div traps on b == 0, but its precondition excludes that case. The
+    // contract tester must SKIP out-of-domain inputs, so the function passes.
+    let src = r#"
+(module m
+  (fn safe_div (params (a i64) (b i64)) (ret i64)
+    (requires (call i64.neq (ref b) (lit 0)))
+    (ensures (call bool.or (call i64.ge (ref result) (lit 0)) (call i64.lt (ref result) (lit 0))))
+    (body (call i64.div (ref a) (ref b)))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted());
+    assert_eq!(fn_def(&m, "safe_div").requires.len(), 1);
+
+    // Passes despite div-by-zero being reachable: b == 0 is out of domain.
+    assert!(
+        aury::spec::run_contract_tests(&m, 999, 256).is_empty(),
+        "precondition must exclude b == 0 from testing"
+    );
+
+    // Runtime: a precondition violation traps; an in-domain call succeeds.
+    let mut interp = Interp::new(&m, 0);
+    assert!(interp.call_fn("safe_div", vec![i64v(4), i64v(0)]).is_err());
+    assert_eq!(interp.call_fn("safe_div", vec![i64v(6), i64v(2)]).unwrap(), i64v(3));
+}
+
+#[test]
+fn ensures_must_be_a_boolean_predicate() {
+    // An `ensures` clause of type i64 is a Contract-gate rejection with an
+    // admissible replace_node repair.
+    let src = r#"
+(module m
+  (fn f (params (x i64)) (ret i64)
+    (ensures (ref x))
+    (body (ref x))))"#;
+    let m = module(src);
+    let rejs = match check_module(&m) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected a contract rejection"),
+    };
+    assert_eq!(rejs.len(), 1);
+    assert_eq!(rejs[0].gate, Gate::Contract);
+    assert_eq!(rejs[0].kind, "CONTRACT_NOT_BOOL");
+    assert!(rejs[0].repairs.iter().any(|r| r.action == "replace_node"));
+}
+
+#[test]
+fn requires_using_result_is_an_unbound_reference() {
+    // `result` is only in scope for `ensures`. Using it in `requires` must be
+    // an ordinary unbound-reference rejection (scope enforced for free).
+    let src = r#"
+(module m
+  (fn f (params (x i64)) (ret i64)
+    (requires (call i64.ge (ref result) (lit 0)))
+    (body (ref x))))"#;
+    let m = module(src);
+    let rejs = match check_module(&m) {
+        ValidationOutcome::Rejected(r) => r,
+        _ => panic!("expected an unbound-ref rejection"),
+    };
+    assert!(rejs.iter().any(|r| r.kind == "UNBOUND_REF" && r.path == "result"));
+}
+
+#[test]
+fn postcondition_that_ignores_result_is_vacuous() {
+    // An `ensures` that never mentions `result` cannot constrain the output.
+    let src = r#"
+(module m
+  (fn id (params (x i64)) (ret i64)
+    (ensures (call i64.ge (ref x) (lit -1000)))
+    (body (ref x))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted());
+    let failures = aury::spec::run_contract_tests(&m, 1, 64);
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].vacuous, "ensures ignoring result must be flagged vacuous");
+    assert_eq!(
+        aury::spec::contract_failure_to_rejection(&failures[0]).kind,
+        "VACUOUS_CONTRACT"
+    );
+}
+
+#[test]
+fn contracts_round_trip_through_json_authoring_surface() {
+    // A model can author contracts via typed-object JSON; the result is
+    // identical canonical IR and validates.
+    let json = r#"{"kind":"module","name":"m","items":[
+      {"kind":"fn","name":"abs","params":[{"name":"x","type":"i64"}],"ret":"i64",
+       "ensures":[{"kind":"call","op":"i64.ge","args":[
+         {"kind":"ref","name":"result"},{"kind":"lit","value":0}]}],
+       "body":{"kind":"if",
+         "cond":{"kind":"call","op":"i64.lt","args":[{"kind":"ref","name":"x"},{"kind":"lit","value":0}]},
+         "then":{"kind":"call","op":"i64.neg","args":[{"kind":"ref","name":"x"}]},
+         "else":{"kind":"ref","name":"x"}}}
+    ]}"#;
+    let m = aury::json::build_module_from_json(json).expect("ingest contracts");
+    assert!(check_module(&m).is_accepted());
+    assert_eq!(fn_def(&m, "abs").ensures.len(), 1);
+
+    // Array-form round trip: sexpr -> JSON -> sexpr is lossless, so contracts
+    // survive emit-json / ingest.
+    let s = aury::json::parse_json_sexpr(json).unwrap();
+    let back = aury::json::sexpr_to_json(&s);
+    let round = aury::json::json_to_sexpr(&back).unwrap();
+    assert_eq!(s, round, "contracts must survive the JSON round trip");
+}

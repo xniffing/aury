@@ -117,6 +117,14 @@ fn typed_to_sexpr(kind: &str, obj: &serde_json::Map<String, Value>) -> Result<Se
                     items.push(list(e));
                 }
             }
+            // Contract clauses, emitted after effects and before the body so
+            // they line up with the s-expression `fn` grammar.
+            for r in jeach("requires") {
+                items.push(list(vec![atom("requires"), json_to_sexpr(r)?]));
+            }
+            for e in jeach("ensures") {
+                items.push(list(vec![atom("ensures"), json_to_sexpr(e)?]));
+            }
             let body = obj.get("body").ok_or("fn.body")?;
             items.push(list(vec![atom("body"), json_to_sexpr(body)?]));
             Ok(list(items))
