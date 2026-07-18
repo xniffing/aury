@@ -79,6 +79,15 @@
       ]
     },
     {
+      "name": "log-scope",
+      "intent": "Uses the scoped `log` capability without a grant; the loop should wrap it in a (with (log) ...) scope and accept — a capability-scope convergence distinct from widening an effect row.",
+      "program": "../examples/agent/log-scope.aury",
+      "checks": [
+        { "fn": "annotate", "args": ["42"], "expect": "42" },
+        { "fn": "annotate", "args": ["-7"], "expect": "-7" }
+      ]
+    },
+    {
       "name": "calculator",
       "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
       "program": "../projects/calculator/calculator.json",

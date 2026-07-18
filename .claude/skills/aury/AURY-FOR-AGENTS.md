@@ -130,6 +130,7 @@ never meaningfully exercised is flagged as **vacuous**.
 | `return` | `{"kind":"return","value":<e>}` | early return from the **function** (unwinds past loops) |
 | `block` | `{"kind":"block","stmts":[<e>,...],"tail":<e>}` | sequence the `stmts`, then the value is `tail` |
 | `region` | `{"kind":"region","name":"r","body":<e>}` | open an allocation/effect region |
+| `with` | `{"kind":"with","caps":["log"],"body":<e>}` | grant capabilities to a lexical scope (see Effects) |
 | `copy` | `{"kind":"copy","value":<e>}` | explicit copy of a value |
 | `vec-new` | `{"kind":"vec-new","type":"(vec i64)","elems":[<e>,...]}` | build a vector |
 | `vec-push` | `{"kind":"vec-push","target":<e>,"value":<e>}` | append → grown vector; **consumes** a bare `(ref v)` target (moves it) |
@@ -288,6 +289,14 @@ See `examples/agent/parse-classify.json` for the full pattern with properties.
 - The validator **rejects effect leaks**: using `rng.next` in a pure function is
   a rejection whose repair either adds the effect to the signature or removes the
   call.
+- **Two capability modes.** `rng` is *ambient*: grant it with the `effects` row.
+  Newer capabilities are *scoped*: grant them lexically with a `with` node,
+  `{"kind":"with","caps":["log"],"body":<e>}`. An op needing a scoped capability
+  (e.g. `log.i64` needs `log`) used outside a matching `with` is
+  `CAPABILITY_NOT_IN_SCOPE`; the repair wraps it in `(with (log) …)`.
+- A `with` also **discharges** what it grants, so a function whose only `rng` use
+  is inside `{"kind":"with","caps":["rng"],"body":…}` is pure to its callers and
+  needs no `effects` row. See `examples/agent/log-scope.aury`.
 
 ---
 

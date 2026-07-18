@@ -167,6 +167,7 @@ fn collect_calls(e: &Expr, out: &mut Vec<String>) {
             collect_calls(tail, out);
         }
         Expr::Region { body, .. } => collect_calls(body, out),
+        Expr::With { body, .. } => collect_calls(body, out),
         Expr::Copy { value, .. } => collect_calls(value, out),
         Expr::Cast { value, .. } => collect_calls(value, out),
         Expr::VecNew { elems, .. } => {
@@ -665,6 +666,10 @@ impl Lowerer {
                     (Some(val), llvm_ty, false)
                 }
             }
+            // `with` only scopes capabilities; it has no runtime representation
+            // (v0 capabilities are ambient/deterministic), so lowering is a
+            // pass-through of its body.
+            Expr::With { body, .. } => self.lower_expr(body),
             Expr::Copy { value, .. } => self.lower_expr(value),
             Expr::Cast { target, value, .. } => self.lower_cast(target, value),
             Expr::VecNew { ty, elems, .. } => self.lower_vec_new(ty, elems),
@@ -1589,6 +1594,7 @@ impl Lowerer {
             Expr::Set { .. } => Type::Unit,
             Expr::Block { tail, .. } => self.infer_env(tail, env),
             Expr::Region { body, .. } => self.infer_env(body, env),
+            Expr::With { body, .. } => self.infer_env(body, env),
             Expr::Copy { value, .. } => self.infer_env(value, env),
             Expr::Cast { target, .. } => target.clone(),
             Expr::VecNew { ty, .. } => ty.clone(),
@@ -1652,6 +1658,9 @@ impl Lowerer {
                     !inner.iter().any(|n| n == name) || walk(value, inner, depth)
                 }
                 Expr::Region { .. } => true, // nested region: conservative
+                // `with` is transparent to memory — it only scopes capabilities,
+                // so it neither allocates nor escapes; recurse into its body.
+                Expr::With { body, .. } => walk(body, inner, depth),
                 Expr::Lit { .. } | Expr::Ref { .. } => false,
                 Expr::Call { args, .. } => args.iter().any(|a| walk(a, inner, depth)),
                 Expr::If { cond, then, els, .. } => {
@@ -1727,6 +1736,7 @@ impl Lowerer {
                 stmts.iter().any(Self::expr_diverges) || Self::expr_diverges(tail)
             }
             Expr::Region { body, .. } => Self::expr_diverges(body),
+            Expr::With { body, .. } => Self::expr_diverges(body),
             Expr::Copy { value, .. } | Expr::Cast { value, .. } => {
                 Self::expr_diverges(value)
             }
@@ -1772,6 +1782,7 @@ impl Lowerer {
                 stmts.iter().any(Self::loop_body_has_break) || Self::loop_body_has_break(tail)
             }
             Expr::Region { body, .. } => Self::loop_body_has_break(body),
+            Expr::With { body, .. } => Self::loop_body_has_break(body),
             Expr::Return { value, .. } => Self::loop_body_has_break(value),
             Expr::Copy { value, .. } | Expr::Cast { value, .. } => Self::loop_body_has_break(value),
             Expr::VecNew { elems, .. } => elems.iter().any(Self::loop_body_has_break),
@@ -1820,6 +1831,7 @@ impl Lowerer {
                 .find_map(|s| self.first_break_type(s, env))
                 .or_else(|| self.first_break_type(tail, env)),
             Expr::Region { body, .. } => self.first_break_type(body, env),
+            Expr::With { body, .. } => self.first_break_type(body, env),
             Expr::Return { value, .. } => self.first_break_type(value, env),
             Expr::Copy { value, .. } | Expr::Cast { value, .. } => self.first_break_type(value, env),
             Expr::VecNew { elems, .. } => elems.iter().find_map(|e| self.first_break_type(e, env)),

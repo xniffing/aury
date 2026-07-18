@@ -170,6 +170,17 @@ pub enum Expr {
         id: NodeId,
         value: Box<Expr>,
     },
+    /// (with (cap ...) body) — grants capabilities to a lexical scope. An
+    /// effectful op is legal where its capability is in scope; a `with` both
+    /// brings the named capabilities into scope for `body` and *discharges* them
+    /// from the effects `body` propagates to the enclosing function's row (so a
+    /// function whose only effect is `with`-scoped is pure to its callers). Each
+    /// cap is a bare atom (`rng`) or a multi-word list (`(fs read)`).
+    With {
+        id: NodeId,
+        caps: Vec<String>,
+        body: Box<Expr>,
+    },
     /// (vec-new t elem1 elem2 ...)
     VecNew {
         id: NodeId,
@@ -232,6 +243,7 @@ impl Expr {
             Expr::Block { id, .. } => *id,
             Expr::Region { id, .. } => *id,
             Expr::Copy { id, .. } => *id,
+            Expr::With { id, .. } => *id,
             Expr::VecNew { id, .. } => *id,
             Expr::Index { id, .. } => *id,
             Expr::VecPush { id, .. } => *id,
@@ -525,6 +537,27 @@ fn unwrap_kw<'a>(s: &'a Sexpr, kw: &str) -> Result<&'a Sexpr, String> {
     Ok(s)
 }
 
+/// Parse a `with` capability list: a parenthesized group whose members are
+/// capability atoms (`rng`) or multi-word sublists (`(fs read)`), joined the
+/// same way effect-row caps are. `(with () body)` (no caps) is legal but inert.
+fn parse_cap_list(s: &Sexpr) -> Result<Vec<String>, String> {
+    let xs = s.list().ok_or("with capability list must be a parenthesized group")?;
+    let mut caps = Vec::new();
+    for x in xs {
+        match x {
+            Sexpr::Atom(a) => caps.push(a.clone()),
+            Sexpr::List(inner) => {
+                let parts: Vec<&str> = inner.iter().filter_map(|y| y.atom()).collect();
+                if parts.is_empty() {
+                    return Err("empty capability in with-list".into());
+                }
+                caps.push(parts.join(" "));
+            }
+        }
+    }
+    Ok(caps)
+}
+
 fn build_expr(s: &Sexpr) -> Result<Expr, String> {
     match s {
         Sexpr::Atom(a) => {
@@ -670,6 +703,14 @@ fn build_expr(s: &Sexpr) -> Result<Expr, String> {
                     let value = Box::new(build_expr(xs.get(1).ok_or("copy value")?)?);
                     let id = sexpr_id(s);
                     Ok(Expr::Copy { id, value })
+                }
+                "with" => {
+                    // (with (cap ...) body) — the cap list is a parenthesized
+                    // group of capability atoms / (fs read)-style sublists.
+                    let caps = parse_cap_list(xs.get(1).ok_or("with capability list")?)?;
+                    let body = Box::new(build_expr(xs.get(2).ok_or("with body")?)?);
+                    let id = sexpr_id(s);
+                    Ok(Expr::With { id, caps, body })
                 }
                 "vec-new" => {
                     let ty = Type::parse(xs.get(1).ok_or("vec-new type")?)?;

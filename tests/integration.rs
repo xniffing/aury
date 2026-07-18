@@ -212,6 +212,74 @@ fn repair_loop_widens_existing_effect_row_in_place() {
     assert!(check_module(&m).is_accepted());
 }
 
+// ---- v0.3 Track A: first-class capabilities + `with` scope ----
+
+#[test]
+fn with_scope_discharges_ambient_effect() {
+    // A function whose only `rng` use is inside `(with (rng) ...)` is *pure* to
+    // its callers — the `with` grants the capability locally and discharges it,
+    // so no `(effects rng)` row is needed and the module is accepted as-is.
+    let src = r#"
+(module m
+  (fn seeded (params (a i64)) (ret i64)
+    (body (with (rng) (call i64.add (ref a) (call i64.mul (call rng.next) (lit 0)))))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted(), "with(rng) should discharge the effect");
+    // Sanity: the same body WITHOUT the `with` and without a row is a leak.
+    let leak = r#"
+(module m
+  (fn seeded (params (a i64)) (ret i64)
+    (body (call i64.add (ref a) (call i64.mul (call rng.next) (lit 0))))))"#;
+    let lm = module(leak);
+    assert!(!check_module(&lm).is_accepted(), "bare rng.next should still leak");
+}
+
+#[test]
+fn scoped_capability_op_requires_a_with_scope() {
+    // `log.i64` needs the *scoped* `log` capability. Used bare, it is a
+    // CAPABILITY_NOT_IN_SCOPE rejection carrying only the wrap repair; used
+    // inside `(with (log) ...)` it type-checks.
+    let bare = r#"
+(module m
+  (fn trace (params (a i64)) (ret i64)
+    (body (call log.i64 (ref a)))))"#;
+    let m = module(bare);
+    match check_module(&m) {
+        ValidationOutcome::Rejected(rejs) => {
+            let r = rejs.iter().find(|r| r.kind == "CAPABILITY_NOT_IN_SCOPE")
+                .expect("expected CAPABILITY_NOT_IN_SCOPE");
+            assert_eq!(r.repairs.len(), 1);
+            assert_eq!(r.repairs[0].action, "wrap_in_capability_scope");
+        }
+        _ => panic!("bare log.i64 should be rejected"),
+    }
+    let scoped = r#"
+(module m
+  (fn trace (params (a i64)) (ret i64)
+    (body (with (log) (call log.i64 (ref a))))))"#;
+    assert!(check_module(&module(scoped)).is_accepted(), "with(log) should satisfy the scope gate");
+}
+
+#[test]
+fn repair_loop_wraps_in_capability_scope() {
+    // The closed loop mechanically applies `wrap_in_capability_scope`: a bare
+    // scoped-capability op is repaired into a `(with (log) ...)` scope and
+    // accepted. This is a genuine new gate-convergence case — the loop applies
+    // `with`, not just widen (which is inadmissible for a scoped capability).
+    let src = r#"
+(module m
+  (fn trace (params (a i64)) (ret i64)
+    (body (call log.i64 (ref a)))))"#;
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should wrap and accept: {:?}", res.log);
+    assert!(res.patches_applied >= 1);
+    assert!(res.source.contains("with (log)"), "repaired: {}", res.source);
+    // The repaired program is accepted end to end, and did NOT gain an effect
+    // row (the capability is contained, not exposed on the signature).
+    assert!(!res.source.contains("effects"), "should not widen a row: {}", res.source);
+    assert!(check_module(&module(&res.source)).is_accepted());
+}
+
 // ---- Track C1b: region arena ----
 
 #[test]
@@ -708,6 +776,9 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         ("made", vec![]),
         ("copied", vec![]),
         ("random-pair", vec![]),
+        // v0.3 Track A: a `with (rng)`-scoped draw lowers transparently.
+        ("with-rng", vec!["100".into()]),
+        ("with-rng", vec!["0".into()]),
         ("result-id", vec![r#"{"ok":[5,6]}"#.into()]),
         ("result-id", vec![r#"{"err":{"name":"bad","values":[],"nested":[]}}"#.into()]),
         ("unit-value", vec![]),

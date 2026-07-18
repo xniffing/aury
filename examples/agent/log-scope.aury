@@ -1,0 +1,17 @@
+; v0.3 Track A: capability-scope convergence case for the evaluation corpus.
+;
+; `log.i64` requires the *scoped* `log` capability, which — unlike the ambient
+; `rng` — is granted lexically by a `(with (log) ...)` form, never by an effect
+; row. Written without a scope, `annotate` uses `log.i64` outside any grant, so
+; the effect gate rejects it with CAPABILITY_NOT_IN_SCOPE. The only admissible
+; repair is `wrap_in_capability_scope`: the loop wraps the op in `(with (log) …)`
+; and re-checks. This is the distinct-from-widen convergence the loop could not
+; produce before v0.3 (a scoped capability is not row-grantable, so widening is
+; inapplicable).
+;
+; `log.i64` is modeled as an identity-with-side-effect (yields its argument), so
+; the oracle stays deterministic and checkable while the capability is genuinely
+; exercised. Real emission with native/wasm parity is Track B.
+(module logscope
+  (fn annotate (params (a i64)) (ret i64)
+    (body (call log.i64 (ref a)))))

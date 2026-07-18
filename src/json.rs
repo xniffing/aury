@@ -269,6 +269,26 @@ fn typed_to_sexpr(kind: &str, obj: &serde_json::Map<String, Value>) -> Result<Se
             let value = json_to_sexpr(obj.get("value").ok_or("copy.value")?)?;
             Ok(list(vec![atom("copy"), value]))
         }
+        "with" => {
+            // { kind: "with", caps: ["rng", ["fs","read"]], body: <expr> }
+            // Each cap is a string atom or an array of words (multi-word cap).
+            let mut cap_items = Vec::new();
+            for c in jeach("caps") {
+                match c {
+                    Value::String(s) => cap_items.push(atom(s)),
+                    Value::Array(words) => {
+                        let ws: Vec<Sexpr> = words
+                            .iter()
+                            .filter_map(|w| w.as_str().map(atom))
+                            .collect();
+                        cap_items.push(list(ws));
+                    }
+                    _ => return Err("with.caps entries must be strings or string arrays".into()),
+                }
+            }
+            let body = json_to_sexpr(obj.get("body").ok_or("with.body")?)?;
+            Ok(list(vec![atom("with"), list(cap_items), body]))
+        }
         "vec-new" => {
             let ty = ty_to_sexpr(jstr("type").ok_or("vec-new.type")?)?;
             let mut items = vec![atom("vec-new"), ty];
