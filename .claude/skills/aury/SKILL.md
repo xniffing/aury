@@ -67,6 +67,8 @@ AURY_RESULT {"status":"accepted","patches_applied":1,"entry":"gcd","run":"12","n
 |------|-------|
 | `gcd.json` | Clean JSON authoring: fn + property; accepts in 0 patches, runs interp≡native |
 | `dice.aury` | Effects + regions: `(effects rng)` with `rng.next` inside a `region` |
+| `log-scope.aury` | Scoped capability: bare `log.i64` → `CAPABILITY_NOT_IN_SCOPE`, loop wraps it in `(with (log) …)` |
+| `clock-stamp.aury` | Scoped `clock.now` (deterministic tick) wrapped in `(with (clock) …)`; runs interp≡native |
 | `unterminated.aury` | Parse-gate repair: missing parens auto-closed in 1 patch |
 | `false-property.json` | A false property → `PROPERTY_FALSIFIED` with a shrunk counterexample and `recommend_regenerate` |
 | `parse-classify.json` | `result` (`i64.from_str` + `result.is_ok`) and `match` (lit + bind patterns); 5 properties |
