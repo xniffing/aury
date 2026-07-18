@@ -2,7 +2,7 @@
 name = "aury"
 version = "0.0.2"
 edition = "2021"
-description = "Aury v0: s-expression IR with Merkle IDs, no-inference validation, repair protocol, intent verification"
+description = "Aury v0.2: s-expression IR with Merkle IDs, no-inference validation, repair protocol, intent verification"
 license = "MIT"
 
 [lib]
