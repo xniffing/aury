@@ -315,6 +315,12 @@ impl Interp {
                 // the value space and are GC'd by Rust on scope exit.
                 self.eval(body, scope)
             }
+            Expr::With { body, .. } => {
+                // `with` grants capabilities to a lexical scope; the grant is a
+                // checking-time concept (v0 capabilities are deterministic), so
+                // execution is transparent — evaluate the body.
+                self.eval(body, scope)
+            }
             Expr::Copy { value, .. } => self.eval(value, scope),
             Expr::VecNew { elems, .. } => {
                 let mut vs = Vec::with_capacity(elems.len());
@@ -471,6 +477,18 @@ impl Interp {
                 }
                 let v = self.next_rand();
                 Value::I64(v as i64)
+            }
+            "log.i64" => {
+                // v0.3 Track A: `log` is a lexically-scoped capability (gated by
+                // the `with` scope at check time). The interpreter is the
+                // semantic reference: logging is modeled deterministically as an
+                // identity with a side effect — it yields its argument so it
+                // composes in expression position. Real emission plus native/wasm
+                // parity arrive in Track B.
+                match args.first() {
+                    Some(Value::I64(n)) => Value::I64(*n),
+                    _ => return Err(InterpError("log.i64: expected one i64 argument".into())),
+                }
             }
             _ => {
                 // User function call.

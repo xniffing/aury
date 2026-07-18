@@ -44,6 +44,13 @@ struct Checker {
     fn_id: NodeId,
     /// The function's parameter names → regions (for region checking).
     regions_in_scope: Vec<String>,
+    /// Capabilities brought into lexical scope by enclosing `(with ...)` forms
+    /// (innermost grants appended last). A *scoped* capability op (e.g.
+    /// `log.i64`) is only legal when its capability is present here; otherwise it
+    /// is a `CAPABILITY_NOT_IN_SCOPE` rejection repaired by wrapping it in a
+    /// `with`. Ambient capabilities (`rng`) are granted by the effect row instead
+    /// and are not gated here.
+    caps_in_scope: Vec<String>,
     /// A counter for repair ids.
     repair_counter: u32,
     /// Stack of enclosing loops' break value types (innermost last). `None`
@@ -136,6 +143,7 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
                 declared_effects: f.effects.clone(),
                 fn_id: f.id,
                 regions_in_scope: Vec::new(),
+                caps_in_scope: Vec::new(),
                 repair_counter: 0,
                 break_tys: Vec::new(),
             };
@@ -282,6 +290,33 @@ pub fn is_known_capability(cap: &str) -> bool {
     KNOWN_CAPABILITIES.contains(&cap)
 }
 
+/// **Scoped** capabilities are granted lexically by a `(with ...)` form, not
+/// ambiently by a function's effect row. An op requiring a scoped capability is
+/// legal only inside a matching `with`. `rng` predates capability scoping and
+/// stays *ambient* (row-granted) for back-compat; the capabilities introduced
+/// with the `with` form are scoped. This is the two-mode model of v0.3 Track A.
+pub const SCOPED_CAPABILITIES: &[&str] = &["log", "clock", "net", "state", "fs read", "fs write"];
+
+/// True if `cap` is lexically scoped (granted by `with`, gated at the use site)
+/// rather than ambient (granted by the effect row).
+pub fn is_scoped_capability(cap: &str) -> bool {
+    SCOPED_CAPABILITIES.contains(&cap)
+}
+
+/// The capability a builtin op requires, if any, paired with whether it is
+/// scoped. `rng.*` needs ambient `rng`; `log.*` needs scoped `log`. Returns
+/// `None` for pure ops. Kept in one place so the type gate, effect collection,
+/// and the scope gate agree on what an op requires.
+pub fn op_capability(op: &str) -> Option<&'static str> {
+    if op.starts_with("rng.") {
+        Some("rng")
+    } else if op.starts_with("log.") {
+        Some("log")
+    } else {
+        None
+    }
+}
+
 /// A row over-declares (violates least-privilege) when it is not pure and names
 /// a capability the body never exercises. A pure body over any non-pure row is
 /// the fully-narrowable case.
@@ -366,6 +401,7 @@ fn loop_has_break(e: &Expr) -> bool {
             stmts.iter().any(loop_has_break) || loop_has_break(tail)
         }
         Expr::Region { body, .. } => loop_has_break(body),
+        Expr::With { body, .. } => loop_has_break(body),
         Expr::Return { value, .. } => loop_has_break(value),
         Expr::Copy { value, .. } | Expr::Cast { value, .. } => loop_has_break(value),
         Expr::VecNew { elems, .. } => elems.iter().any(loop_has_break),
@@ -412,6 +448,7 @@ impl Checker {
                 stmts.iter().any(|stmt| self.diverges(stmt)) || self.diverges(tail)
             }
             Expr::Region { body, .. } => self.diverges(body),
+            Expr::With { body, .. } => self.diverges(body),
             Expr::Copy { value, .. } | Expr::Cast { value, .. } => self.diverges(value),
             Expr::VecNew { elems, .. } => elems.iter().any(|elem| self.diverges(elem)),
             Expr::Index { target, index, .. } => self.diverges(target) || self.diverges(index),
@@ -481,6 +518,15 @@ impl Checker {
                 body_ty
             }
             Expr::Call { id, op, args } => {
+                // Capability-scope gate: an op requiring a *scoped* capability
+                // (e.g. `log.i64`) is only legal inside a matching `(with ...)`.
+                // Ambient capabilities (`rng`) are gated by the effect row, not
+                // here, so this fires only for the lexically-scoped mode.
+                if let Some(cap) = op_capability(op) {
+                    if is_scoped_capability(cap) && !self.caps_in_scope.iter().any(|c| c == cap) {
+                        self.reject_capability_not_in_scope(*id, op, cap);
+                    }
+                }
                 // Built-in operators.
                 if let Some((ret, builtin_effects)) = self.check_builtin(*id, op, args, scope, ret_ty) {
                     let _ = builtin_effects; // builtins are pure in v0 except rng.*
@@ -639,6 +685,17 @@ impl Checker {
                 self.regions_in_scope.push(name.clone());
                 let ty = self.check_expr(body, scope, ret_ty);
                 self.regions_in_scope.pop();
+                ty
+            }
+            Expr::With { id: _, caps, body } => {
+                // Bring the granted capabilities into lexical scope for the body,
+                // then restore. The type of a `with` is the type of its body.
+                let pushed = caps.len();
+                for c in caps {
+                    self.caps_in_scope.push(c.clone());
+                }
+                let ty = self.check_expr(body, scope, ret_ty);
+                self.caps_in_scope.truncate(self.caps_in_scope.len() - pushed);
                 ty
             }
             Expr::Copy { id, value } => {
@@ -885,6 +942,12 @@ impl Checker {
             // function's declared effect row. First-class capability values
             // arrive in v1.
             "rng.next" | "rng.i64" => (Type::I64, vec![]),
+            // `log.i64` logs an i64 and yields it back (identity-with-side-effect),
+            // so it composes in expression position. It requires the *scoped*
+            // `log` capability (gated at the call site by the `with` scope, not
+            // the effect row). Runtime execution with native/wasm parity arrives
+            // in Track B; v0.3 A1 checks it and threads the capability.
+            "log.i64" => (Type::I64, vec![Type::I64]),
             _ => return None,
         };
         if args.len() != arg_tys.len() {
@@ -956,6 +1019,24 @@ impl Checker {
                 self.collect_effects_into(tail, row);
             }
             Expr::Region { body, .. } => self.collect_effects_into(body, row),
+            Expr::With { caps, body, .. } => {
+                // A `with` discharges the capabilities it grants: collect the
+                // body's effects, then drop the granted caps before they
+                // propagate to the enclosing function's row. So a function whose
+                // only ambient effect (`rng`) is used inside `(with (rng) …)` is
+                // pure to its callers. (Scoped caps like `log` are never row-
+                // tracked, so dropping them is a no-op here.)
+                let mut inner = EffectRow::pure_row();
+                self.collect_effects_into(body, &mut inner);
+                let remaining: Vec<String> = inner
+                    .caps
+                    .into_iter()
+                    .filter(|c| !caps.contains(c))
+                    .collect();
+                if !remaining.is_empty() {
+                    *row = row.union_with(&EffectRow { pure: false, caps: remaining });
+                }
+            }
             Expr::Copy { value, .. } => self.collect_effects_into(value, row),
             Expr::VecNew { elems, .. } => {
                 for e in elems {
@@ -1341,6 +1422,52 @@ impl Checker {
                     "Split the region: move `{}` into a fresh disjoint region `{}`.",
                     second, fresh
                 ),
+            }],
+        });
+    }
+
+    /// A scoped-capability op used outside a matching `(with ...)`. Unlike an
+    /// ambient effect leak (which widens the function's row), this is fixed by
+    /// *containing* the capability: wrap the op in a `with` that grants it. The
+    /// repair targets the op node and uses the `?` placeholder so the driver
+    /// substitutes the original expression into `(with (cap) ?)`. It is the only
+    /// admissible repair — a scoped capability is never row-grantable — so the
+    /// closed loop applies it directly.
+    fn reject_capability_not_in_scope(&mut self, id: NodeId, op: &str, cap: &str) {
+        let rid = self.next_repair_id();
+        // (with (<cap>) ?) — a bare atom for a single-word cap, a nested list for
+        // a multi-word one (e.g. `(fs read)`), matching the with-list grammar.
+        let cap_atom = if cap.contains(' ') {
+            Sexpr::List(cap.split(' ').map(|w| Sexpr::Atom(w.to_string())).collect())
+        } else {
+            Sexpr::Atom(cap.to_string())
+        };
+        let template = Sexpr::List(vec![
+            Sexpr::Atom("with".into()),
+            Sexpr::List(vec![cap_atom]),
+            Sexpr::Atom("?".into()),
+        ]);
+        self.rejections.push(Rejection {
+            gate: Gate::Effect,
+            kind: "CAPABILITY_NOT_IN_SCOPE".into(),
+            node: id,
+            path: format!("call {}", op),
+            expected: format!("`{}` granted by an enclosing (with ({}) ...)", cap, cap),
+            received: format!("`{}` used with no capability scope in effect", op),
+            context: {
+                let mut m = HashMap::new();
+                m.insert("capability".into(), cap.to_string());
+                m
+            },
+            repairs: vec![Repair {
+                id: rid,
+                action: "wrap_in_capability_scope".into(),
+                with: Some(template),
+                cost: 2,
+                preserves_effects: true,
+                preserves_contracts: true,
+                propagates: vec![],
+                note: format!("Grant `{}` to a lexical scope: wrap the op in (with ({}) …)", cap, cap),
             }],
         });
     }

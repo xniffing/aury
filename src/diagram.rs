@@ -165,6 +165,7 @@ fn collect_calls(e: &Expr, out: &mut Vec<String>) {
             collect_calls(tail, out);
         }
         Expr::Region { body, .. } => collect_calls(body, out),
+        Expr::With { body, .. } => collect_calls(body, out),
         Expr::Copy { value, .. } => collect_calls(value, out),
         Expr::VecNew { elems, .. } => {
             for el in elems {

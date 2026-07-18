@@ -357,6 +357,7 @@ fn expr_mentions(e: &Expr, name: &str) -> bool {
             stmts.iter().any(|s| expr_mentions(s, name)) || expr_mentions(tail, name)
         }
         Expr::Region { body, .. } => expr_mentions(body, name),
+        Expr::With { body, .. } => expr_mentions(body, name),
         Expr::Copy { value, .. } => expr_mentions(value, name),
         Expr::VecNew { elems, .. } => elems.iter().any(|e| expr_mentions(e, name)),
         Expr::Index { target, index, .. } => expr_mentions(target, name) || expr_mentions(index, name),
@@ -399,6 +400,7 @@ fn body_references_user_fn(e: &Expr, fns: &std::collections::HashSet<String>) ->
                 || body_references_user_fn(tail, fns)
         }
         Expr::Region { body, .. } => body_references_user_fn(body, fns),
+        Expr::With { body, .. } => body_references_user_fn(body, fns),
         Expr::Copy { value, .. } => body_references_user_fn(value, fns),
         Expr::VecNew { elems, .. } => elems.iter().any(|e| body_references_user_fn(e, fns)),
         Expr::Index { target, index, .. } => {
