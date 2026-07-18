@@ -123,11 +123,14 @@ algorithms, transformations, and small tools.
 | Structural vacuity detection | Implemented |
 | Executable function contracts (`requires`/`ensures`) | Implemented (runtime + intent gate) |
 | Mutable loops (`set` / `loop` / `break`) | Implemented (interp + native parity) |
+| Growable vectors (`vec-push`) + affine move-tracking | Implemented (interp + native + wasm parity) |
+| Mechanical effect-row repair convergence | Implemented (widen / drop-unused / unknown-cap applied by the loop) |
 | Tree-walking interpreter | Implemented |
 | Static, type-aware LLVM lowering | Implemented |
 | Native vectors, structs, results, strings, and RNG | Implemented |
 | Interpreter/native differential tests | Implemented |
-| Full arena lifetime semantics | Deferred; v0 `region`/`copy` are explicit no-ops |
+| Arena lifetime semantics for escape-free regions | Implemented (bulk-free + result-relocation; escaping regions fall back to process-lifetime) |
+| `with` capability scope + deep-copy `copy` + `REGION_ESCAPE` gate | Deferred to v0.3 |
 | SMT contract discharge | Not implemented |
 | Real MLIR dialect pipeline | Not implemented; v0 emits LLVM IR directly |
 | General FFI and OS capability surface | Not implemented |
