@@ -812,11 +812,16 @@ generation-reliability baseline.
 
 ### What has not yet been measured
 
-- first-shot generation success against Python, Rust, or a baseline IR (the
-  corpus above measures repair convergence *within* Aury — including a per-gate
-  convergence breakdown — and cross-implementation *agreement* against a
-  reference impl, but not a cross-language *generation* comparison, which
-  requires model-generated programs in another language on a matched task set);
+- first-shot generation success against Python at *scale*. The **record/replay
+  harness for this now exists** (v0.3 Track D): `eval/record/generate.py` records,
+  offline, model-generated programs in Aury *and* Python on a matched
+  language-neutral task set, and `aury eval-generated` replays those committed
+  fixtures deterministically — Aury through the repair loop + oracle, Python
+  first-shot in a hermetic subprocess — into an Aury-vs-Python comparison
+  (first-shot / repair-convergence / final oracle-correct). This closes the
+  methodology gap the earlier cross-*implementation* agreement metric could not;
+  what remains is a real recorded run at sample size (the generation step is
+  non-hermetic and model/date-stamped, so it is run and committed deliberately);
 - repair-loop convergence at scale over a large, uncurated intent corpus;
 - semantic preservation under large-program optimization;
 - user comprehension of generated properties;

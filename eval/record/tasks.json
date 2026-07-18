@@ -1,0 +1,68 @@
+{
+  "_comment": "Track D matched task set for the generation-reliability baseline. Language-neutral algorithms only (no Aury-gate demos). Each task carries a natural-language intent, the exact function signature the model must produce (so the oracle can call it on both sides), and concrete input->output oracle checks. `aury record` (generate.py) turns these into per-language prompts; `aury eval-generated` replays recorded model outputs through the gates and scores Aury-vs-baseline. Grow toward >=30 tasks.",
+  "seed": "0xC0FFEE",
+  "tasks": [
+    {
+      "name": "add",
+      "intent": "Return the sum of two integers a and b.",
+      "signature": { "fn": "add", "params": [["a", "i64"], ["b", "i64"]], "ret": "i64" },
+      "checks": [
+        { "args": ["2", "3"], "expect": "5" },
+        { "args": ["-4", "10"], "expect": "6" },
+        { "args": ["0", "0"], "expect": "0" }
+      ]
+    },
+    {
+      "name": "gcd",
+      "intent": "Return the greatest common divisor of two non-negative integers a and b (Euclid's algorithm; gcd(a,0)=a).",
+      "signature": { "fn": "gcd", "params": [["a", "i64"], ["b", "i64"]], "ret": "i64" },
+      "checks": [
+        { "args": ["48", "36"], "expect": "12" },
+        { "args": ["17", "5"], "expect": "1" },
+        { "args": ["7", "0"], "expect": "7" }
+      ]
+    },
+    {
+      "name": "factorial",
+      "intent": "Return n! (the product of 1..n) for a non-negative integer n; factorial(0)=1.",
+      "signature": { "fn": "factorial", "params": [["n", "i64"]], "ret": "i64" },
+      "checks": [
+        { "args": ["0"], "expect": "1" },
+        { "args": ["5"], "expect": "120" },
+        { "args": ["10"], "expect": "3628800" }
+      ]
+    },
+    {
+      "name": "fib",
+      "intent": "Return the n-th Fibonacci number, 0-indexed: fib(0)=0, fib(1)=1, fib(n)=fib(n-1)+fib(n-2).",
+      "signature": { "fn": "fib", "params": [["n", "i64"]], "ret": "i64" },
+      "checks": [
+        { "args": ["0"], "expect": "0" },
+        { "args": ["1"], "expect": "1" },
+        { "args": ["10"], "expect": "55" }
+      ]
+    },
+    {
+      "name": "is_prime",
+      "intent": "Return 1 if n is a prime number, else 0. n < 2 is not prime.",
+      "signature": { "fn": "is_prime", "params": [["n", "i64"]], "ret": "i64" },
+      "checks": [
+        { "args": ["1"], "expect": "0" },
+        { "args": ["2"], "expect": "1" },
+        { "args": ["7"], "expect": "1" },
+        { "args": ["9"], "expect": "0" }
+      ]
+    },
+    {
+      "name": "isqrt",
+      "intent": "Return the integer square root of a non-negative integer n (the largest k with k*k <= n).",
+      "signature": { "fn": "isqrt", "params": [["n", "i64"]], "ret": "i64" },
+      "checks": [
+        { "args": ["0"], "expect": "0" },
+        { "args": ["15"], "expect": "3" },
+        { "args": ["16"], "expect": "4" },
+        { "args": ["99"], "expect": "9" }
+      ]
+    }
+  ]
+}

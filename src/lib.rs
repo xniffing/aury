@@ -25,6 +25,7 @@
 pub mod ast;
 pub mod diagram;
 pub mod eval;
+pub mod generated;
 pub mod id;
 pub mod interp;
 pub mod json;

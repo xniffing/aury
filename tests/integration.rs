@@ -280,6 +280,30 @@ fn repair_loop_wraps_in_capability_scope() {
     assert!(check_module(&module(&res.source)).is_accepted());
 }
 
+// ---- v0.3 Track D: generation-reliability replay (record/replay) ----
+
+#[test]
+fn generated_replay_scores_are_deterministic() {
+    // Replay the committed synthetic sample through the gates and assert the
+    // Aury-side aggregates are stable. This gates on *deterministic scoring*, not
+    // on a win-rate — the number is evidence, not a pass/fail threshold. The
+    // Python side needs python3, so it is not asserted here (kept hermetic).
+    let dir = std::path::Path::new("eval/generated/sample-2026-07-18");
+    let report = aury::generated::run(dir, 0xC0FFEE).expect("replay the sample");
+    assert_eq!(report.aury.total, 4, "sample has 4 Aury generations");
+    // add/0 first-shot ok, gcd/0 first-shot ok, gcd/1 first-shot valid-but-wrong.
+    assert_eq!(report.aury.first_shot_valid, 3);
+    // add/1 (missing paren) converges via parse-repair.
+    assert_eq!(report.aury.converged, 1);
+    // add/0, add/1, gcd/0 are oracle-correct; gcd/1 (a+b) is not.
+    assert_eq!(report.aury.final_correct, 3);
+    // Determinism: a second replay yields identical aggregates.
+    let again = aury::generated::run(dir, 0xC0FFEE).unwrap();
+    assert_eq!(again.aury.first_shot_valid, report.aury.first_shot_valid);
+    assert_eq!(again.aury.converged, report.aury.converged);
+    assert_eq!(again.aury.final_correct, report.aury.final_correct);
+}
+
 // ---- v0.3 Track C: region-escape gate + real deep-copy ----
 
 #[test]

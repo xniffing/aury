@@ -1,0 +1,1 @@
+(module m (fn gcd (params (a i64) (b i64)) (ret i64) (body (call i64.add (ref a) (ref b)))))

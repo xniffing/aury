@@ -40,6 +40,11 @@ COMMANDS:
   eval <corpus.json> [--seed N] [--md out.md] [--csv out.csv]
                              Run the closed loop over a corpus of (intent, program)
                              tasks and print a repair-convergence table.
+  eval-generated <dir> [--md out.md]
+                             Replay recorded model generations (from
+                             eval/record/generate.py) and print the Aury-vs-Python
+                             generation-reliability comparison. Scoring is
+                             deterministic; recording (generate.py) is offline.
   diagram <file> [--kind call|types] [-o out.md]
                              Render the module's design as a Mermaid diagram:
                              `call` (call graph with effect badges, the default)
@@ -109,6 +114,7 @@ fn main() -> ExitCode {
         "ingest" => cmd_ingest(&args[2..]),
         "emit-json" => cmd_emit_json(&args[2..]),
         "eval" => cmd_eval(&args[2..]),
+        "eval-generated" => cmd_eval_generated(&args[2..]),
         "diagram" => cmd_diagram(&args[2..]),
         other => {
             eprintln!("unknown command: {}\n\n{}", other, USAGE);
@@ -307,6 +313,28 @@ fn cmd_lower(args: &[String]) -> Result<ExitCode, String> {
     let path = args.first().ok_or("lower <file>")?;
     let m = build(path)?;
     print!("{}", lower_to_mlir_sketch(&m));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// eval-generated: replay recorded model generations (from generate.py) through
+/// the gates and print the Aury-vs-Python generation-reliability comparison. The
+/// scoring is deterministic; only the recording step was non-hermetic.
+fn cmd_eval_generated(args: &[String]) -> Result<ExitCode, String> {
+    let dir = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or("eval-generated <generated-dir> [--md out.md]")?;
+    let flag = |name: &str| -> Option<String> {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    };
+    let report = aury::generated::run(std::path::Path::new(dir), 0xC0FFEE)?;
+    let markdown = report.to_markdown();
+    print!("{}", markdown);
+    println!("\n{}", report.summary());
+    if let Some(path) = flag("--md") {
+        std::fs::write(&path, &markdown).map_err(|e| format!("write {}: {}", path, e))?;
+        eprintln!("wrote {}", path);
+    }
     Ok(ExitCode::SUCCESS)
 }
 

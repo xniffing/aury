@@ -1,0 +1,6 @@
+(module m
+  (fn gcd (params (a i64) (b i64)) (ret i64)
+    (body
+      (if (call i64.eq (ref b) (lit 0))
+          (then (ref a))
+          (else (call gcd (ref b) (call i64.mod (ref a) (ref b))))))))
