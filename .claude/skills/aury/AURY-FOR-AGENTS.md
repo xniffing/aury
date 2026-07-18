@@ -257,6 +257,18 @@ that is byte-identical across the interpreter, native, and wasm backends.
 |----|-----------|
 | `result.is_ok` | `((result i64 str)) -> bool` |
 
+**Capability ops** (each requires its capability — see §6):
+| op | signature | capability |
+|----|-----------|-----------|
+| `rng.next` `rng.i64` | `() -> i64` | `rng` (ambient — declare in `effects`) |
+| `clock.now` | `() -> i64` | `clock` (scoped — needs a `with`) |
+| `log.i64` | `(i64) -> i64` | `log` (scoped — needs a `with`) |
+
+`rng.*` draws a deterministic pseudo-random `i64` (seeded). `clock.now` reads a
+deterministic monotonic tick (0, 1, 2, … per call — not wall-clock). `log.i64`
+emits its value (to stderr) and returns it. All three are byte-identical across
+interp/native/wasm.
+
 A `call` whose `op` is not a builtin is a **call to a user `fn`** of that name;
 the argument types must match the callee's `params`.
 
