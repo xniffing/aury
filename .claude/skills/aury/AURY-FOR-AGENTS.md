@@ -282,8 +282,9 @@ See `examples/agent/parse-classify.json` for the full pattern with properties.
 
 - A function with no `effects` field is **pure** and may only call pure things.
 - Declaring `"effects": ["rng"]` lets the body use `rng.next` (→ `i64`) and call
-  other `rng` functions. Capabilities that parse: `rng`, `io`, `net`, `time`
-  (only `rng` has an interpreter/native builtin in v0).
+  other `rng` functions. Vocabulary: `rng`, `clock`, `log`, `net`, `state`,
+  `fs read`, `fs write`. `rng` (ambient) and the scoped `log`/`clock` have
+  executable ops; the rest are checked but have no ops yet.
 - Effectful/allocating work happens inside a `region` node; `rng.next` is used
   inside one. See `examples/agent/dice.aury` for the canonical shape.
 - The validator **rejects effect leaks**: using `rng.next` in a pure function is
@@ -297,6 +298,9 @@ See `examples/agent/parse-classify.json` for the full pattern with properties.
 - A `with` also **discharges** what it grants, so a function whose only `rng` use
   is inside `{"kind":"with","caps":["rng"],"body":…}` is pure to its callers and
   needs no `effects` row. See `examples/agent/log-scope.aury`.
+- Two scoped ops **execute** (interp + native + wasm): `log.i64` (→ i64) emits its
+  value and returns it; `clock.now` (→ i64) reads a deterministic tick (0, 1, 2,
+  … — not wall-clock, so reproducible). Both need a `with` for their capability.
 
 ---
 

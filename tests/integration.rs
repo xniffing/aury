@@ -280,6 +280,63 @@ fn repair_loop_wraps_in_capability_scope() {
     assert!(check_module(&module(&res.source)).is_accepted());
 }
 
+// ---- v0.3 Track B: effectful scoped-capability ops execute ----
+
+#[test]
+fn clock_now_is_a_deterministic_monotonic_tick() {
+    // `clock.now` advances 0, 1, 2, … per call — deterministic (not wall-clock),
+    // so it is reproducible and parity-able. Gated by the scoped `clock`
+    // capability via `with`.
+    let src = r#"
+(module m
+  (fn two-ticks (params) (ret i64)
+    (body (with (clock) (call i64.add (call clock.now) (call clock.now)))))
+  (fn one-tick (params) (ret i64)
+    (body (with (clock) (call clock.now)))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted());
+    let mut interp = Interp::new(&m, 0);
+    // 0 + 1 = 1.
+    assert_eq!(aury::value_io::show_value(&interp.call_fn("two-ticks", vec![]).unwrap()), "1");
+    // A fresh interpreter restarts the tick at 0.
+    let mut interp2 = Interp::new(&m, 0);
+    assert_eq!(aury::value_io::show_value(&interp2.call_fn("one-tick", vec![]).unwrap()), "0");
+}
+
+#[test]
+fn clock_now_requires_a_with_scope() {
+    // Like `log`, `clock` is a scoped capability: a bare `clock.now` is
+    // CAPABILITY_NOT_IN_SCOPE, repaired by wrapping in `(with (clock) …)`.
+    let bare = r#"
+(module m
+  (fn now (params) (ret i64) (body (call clock.now))))"#;
+    match check_module(&module(bare)) {
+        ValidationOutcome::Rejected(rejs) => {
+            assert!(rejs.iter().any(|r| r.kind == "CAPABILITY_NOT_IN_SCOPE"
+                && r.repairs.iter().any(|p| p.action == "wrap_in_capability_scope")));
+        }
+        _ => panic!("bare clock.now should be rejected"),
+    }
+    let res = aury::repair_loop(bare, false, 0);
+    assert!(res.accepted, "loop should wrap clock.now: {:?}", res.log);
+    assert!(res.source.contains("with (clock)"), "repaired: {}", res.source);
+}
+
+#[test]
+fn log_i64_returns_its_argument() {
+    // `log.i64` emits (to stderr) and yields its argument, so it composes in
+    // expression position and its observable result is the input.
+    let src = r#"
+(module m
+  (fn tagged (params (a i64)) (ret i64)
+    (body (with (log) (call i64.add (call log.i64 (ref a)) (lit 1))))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted());
+    let mut interp = Interp::new(&m, 0);
+    let v = interp.call_fn("tagged", vec![aury::interp::Value::I64(41)]).unwrap();
+    assert_eq!(aury::value_io::show_value(&v), "42");
+}
+
 // ---- Track C1b: region arena ----
 
 #[test]
@@ -779,6 +836,11 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         // v0.3 Track A: a `with (rng)`-scoped draw lowers transparently.
         ("with-rng", vec!["100".into()]),
         ("with-rng", vec!["0".into()]),
+        // v0.3 Track B: scoped-capability ops execute byte-identically.
+        ("log-echo", vec!["42".into()]),
+        ("log-echo", vec!["-7".into()]),
+        ("clock-first", vec![]),
+        ("clock-ticks", vec![]),
         ("result-id", vec![r#"{"ok":[5,6]}"#.into()]),
         ("result-id", vec![r#"{"err":{"name":"bad","values":[],"nested":[]}}"#.into()]),
         ("unit-value", vec![]),

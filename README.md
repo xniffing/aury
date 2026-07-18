@@ -125,7 +125,8 @@ algorithms, transformations, and small tools.
 | Mutable loops (`set` / `loop` / `break`) | Implemented (interp + native parity) |
 | Growable vectors (`vec-push`) + affine move-tracking | Implemented (interp + native + wasm parity) |
 | Mechanical effect-row repair convergence | Implemented (widen / drop-unused / unknown-cap applied by the loop) |
-| Lexical capability scope (`with`) + scope-gate repair | Implemented (checking + discharge + `wrap_in_capability_scope`; scoped-cap execution is Track B) |
+| Lexical capability scope (`with`) + scope-gate repair | Implemented (checking + discharge + `wrap_in_capability_scope`) |
+| Executable scoped capabilities (`log.i64`, `clock.now`) | Implemented (interp + native + wasm parity; deterministic clock) |
 | Tree-walking interpreter | Implemented |
 | Static, type-aware LLVM lowering | Implemented |
 | Native vectors, structs, results, strings, and RNG | Implemented |
@@ -877,11 +878,13 @@ the loop applies by wrapping the op in `(with (cap) …)`. A `with` also
 inside `(with (rng) …)` is pure to its callers. The `with` form lowers
 transparently (interp/native/wasm identical).
 
-Not yet: real execution of the scoped capabilities with native/wasm parity —
-`log.i64` is modeled deterministically in the interpreter (identity with a side
-effect) but not yet lowered, and `clock`/`net`/`state`/`fs` remain vocabulary
-plus scope-checking without ops (Track B). Extern execution and audited OS shims
-are deferred.
+Two scoped capabilities now **execute** with native/wasm parity: `log.i64`
+emits its value to stderr (a genuine side effect) and returns it, and
+`clock.now` reads a **deterministic monotonic tick** (0, 1, 2, … — hermetic, not
+wall-clock, so it is reproducible and byte-identical across interp/native/wasm).
+Both are gated by their scoped capability. Still vocabulary-plus-scope-checking
+without executable ops: `net`, `state`, `fs`. Extern execution and audited OS
+shims are deferred.
 
 ### Numerical and platform assumptions
 

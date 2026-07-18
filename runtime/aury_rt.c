@@ -126,6 +126,24 @@ int64_t aury_rng_next(void) {
     return (int64_t)(z ^ (z >> 31));
 }
 
+/* The `clock` capability: a deterministic monotonic tick (starts at 0, advances
+ * by one per read). Not wall-clock, so a program's clock reads are reproducible
+ * and byte-identical to the interpreter. */
+static int64_t aury_clock_tick = 0;
+
+int64_t aury_clock_now(void) {
+    return aury_clock_tick++;
+}
+
+/* The `log` capability: emit the value to stderr (a genuine side effect) and
+ * return it, so `log.i64` composes in expression position. The observable
+ * *result* is the argument — what differential parity checks — while the
+ * emission is a side channel (stderr, never stdout). */
+int64_t aury_log_i64(int64_t v) {
+    fprintf(stderr, "[log] %lld\n", (long long)v);
+    return v;
+}
+
 int64_t aury_i64_div(int64_t a, int64_t b) {
     if (b == 0) abort();
     if (a == INT64_MIN && b == -1) return INT64_MIN;

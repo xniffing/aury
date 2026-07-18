@@ -16,11 +16,12 @@ Columns: **First-shot** = the model's initial program passed type + intent check
 | alias-region | region✗ | ✓ | 1 | 1/1 |  |
 | vec-use-after-move | region✗ | ✓ | 1 | 2/2 |  |
 | log-scope | effect✗ | ✓ | 1 | 2/2 |  |
+| clock-scope | effect✗ | ✓ | 1 | 2/2 |  |
 | calculator | ✓ | ✓ | 0 | 3/3 |  |
 | unterminated | parse✗ | ✓ | 1 | 1/1 |  |
 | false-property | intent✗ | ø | 0 | — | correctly rejected (intent gate) |
 
-**13/13 outcomes as expected** · first-shot-valid 8 · rescued by repair 5 · oracle checks 20/20.
+**14/14 outcomes as expected** · first-shot-valid 8 · rescued by repair 6 · oracle checks 22/22.
 
 ### First-shot failures by gate
 
@@ -29,7 +30,7 @@ Columns: **First-shot** = the model's initial program passed type + intent check
 | Gate | first-shot fails | converged | rejected✓ |
 |------|:----------------:|:---------:|:---------:|
 | parse | 1 | 1 | 0 |
-| effect | 2 | 2 | 0 |
+| effect | 3 | 3 | 0 |
 | region | 2 | 2 | 0 |
 | intent | 1 | 0 | 1 |
 

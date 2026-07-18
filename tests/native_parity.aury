@@ -49,6 +49,16 @@
   ; runtime. The `with` lowers transparently, so interp/native/wasm must agree.
   (fn with-rng (params (a i64)) (ret i64)
     (body (with (rng) (call i64.add (ref a) (call rng.next)))))
+  ; v0.3 Track B: scoped-capability ops execute across backends. `log.i64` emits
+  ; to stderr and returns its arg (observable result = the arg). `clock.now` is a
+  ; deterministic monotonic tick (0, 1, 2, …), so a program's clock reads are
+  ; byte-identical between interp and native.
+  (fn log-echo (params (a i64)) (ret i64)
+    (body (with (log) (call log.i64 (ref a)))))
+  (fn clock-first (params) (ret i64)
+    (body (with (clock) (call clock.now))))
+  (fn clock-ticks (params) (ret i64)
+    (body (with (clock) (call i64.add (call clock.now) (call clock.now)))))
   (fn result-id (params (r (result (vec i64) (struct Packet))))
     (ret (result (vec i64) (struct Packet))) (body (ref r)))
   (fn unit-value (params) (ret unit) (body unit))
