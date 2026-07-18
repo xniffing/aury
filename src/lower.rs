@@ -244,6 +244,8 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out_str("declare i64 @aury_region_exit_keep(i64, ptr)\n");
     l.out_str("declare void @aury_rng_init(i64)\n");
     l.out_str("declare i64 @aury_rng_next()\n");
+    l.out_str("declare i64 @aury_clock_now()\n");
+    l.out_str("declare i64 @aury_log_i64(i64)\n");
     l.out_str("declare i64 @aury_i64_div(i64, i64)\n");
     l.out_str("declare i64 @aury_i64_mod(i64, i64)\n");
     l.out_str("declare void @aury_value_print(i64, ptr)\n");
@@ -1192,6 +1194,23 @@ impl Lowerer {
                 if !args.is_empty() { return None; }
                 let r = self.fresh();
                 self.out_str(&format!("  {} = call i64 @aury_rng_next()\n", r));
+                Some((Some(r), "i64".into(), false))
+            }
+            "clock.now" => {
+                if !args.is_empty() { return None; }
+                let r = self.fresh();
+                self.out_str(&format!("  {} = call i64 @aury_clock_now()\n", r));
+                Some((Some(r), "i64".into(), false))
+            }
+            "log.i64" => {
+                if args.len() != 1 { return None; }
+                let (a, aty, d) = self.lower_expr(&args[0]);
+                if d { return Some((None, String::new(), true)); }
+                if aty != "i64" { self.err("log.i64 needs i64"); }
+                // Emit via the runtime and use its returned value, so `log.i64`
+                // is an i64-valued expression.
+                let r = self.fresh();
+                self.out_str(&format!("  {} = call i64 @aury_log_i64(i64 {})\n", r, a.unwrap()));
                 Some((Some(r), "i64".into(), false))
             }
             _ => None,

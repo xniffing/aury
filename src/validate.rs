@@ -312,6 +312,8 @@ pub fn op_capability(op: &str) -> Option<&'static str> {
         Some("rng")
     } else if op.starts_with("log.") {
         Some("log")
+    } else if op.starts_with("clock.") {
+        Some("clock")
     } else {
         None
     }
@@ -945,9 +947,13 @@ impl Checker {
             // `log.i64` logs an i64 and yields it back (identity-with-side-effect),
             // so it composes in expression position. It requires the *scoped*
             // `log` capability (gated at the call site by the `with` scope, not
-            // the effect row). Runtime execution with native/wasm parity arrives
-            // in Track B; v0.3 A1 checks it and threads the capability.
+            // the effect row). Executes across interp/native/wasm (Track B): the
+            // value is emitted to stderr and returned.
             "log.i64" => (Type::I64, vec![Type::I64]),
+            // `clock.now` reads a deterministic monotonic tick (starts at 0, +1
+            // per call) — hermetic, not wall-clock, so it is reproducible across
+            // backends. Requires the *scoped* `clock` capability. (Track B.)
+            "clock.now" => (Type::I64, vec![]),
             _ => return None,
         };
         if args.len() != arg_tys.len() {

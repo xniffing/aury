@@ -1,0 +1,12 @@
+; v0.3 Track B: the scoped `clock` capability executes across backends.
+;
+; `stamp` reads `clock.now` (a deterministic monotonic tick, 0 on the first read)
+; without a capability scope, so the effect gate rejects it with
+; CAPABILITY_NOT_IN_SCOPE. The loop wraps the read in `(with (clock) …)` and
+; re-checks — the same convergence as `log-scope`, on a different scoped
+; capability. Because `clock.now` is deterministic (not wall-clock) and each
+; oracle check runs a fresh interpreter, `stamp(a)` is `a + 0` = `a`, so the
+; oracle is stable and byte-identical across interp/native/wasm.
+(module clockstamp
+  (fn stamp (params (a i64)) (ret i64)
+    (body (call i64.add (ref a) (call clock.now)))))

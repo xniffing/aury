@@ -88,6 +88,15 @@
       ]
     },
     {
+      "name": "clock-scope",
+      "intent": "Reads the scoped `clock` capability without a grant; the loop should wrap the read in a (with (clock) ...) scope and accept. clock.now is a deterministic tick (0 on first read), so the oracle is stable.",
+      "program": "../examples/agent/clock-stamp.aury",
+      "checks": [
+        { "fn": "stamp", "args": ["10"], "expect": "10" },
+        { "fn": "stamp", "args": ["0"], "expect": "0" }
+      ]
+    },
+    {
       "name": "calculator",
       "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
       "program": "../projects/calculator/calculator.json",

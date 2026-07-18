@@ -108,6 +108,10 @@ pub struct Interp {
     /// program = same result (per the proposal's determinism default).
     pub seed: u64,
     step: u64,
+    /// The `clock` capability's monotonic tick: starts at 0 and advances by one
+    /// on each `clock.now`. Deterministic (not wall-clock), so a program's clock
+    /// reads are reproducible and identical to the native/wasm runtime.
+    clock_tick: i64,
 }
 
 impl Interp {
@@ -130,6 +134,7 @@ impl Interp {
             structs,
             seed,
             step: 0,
+            clock_tick: 0,
         }
     }
 
@@ -479,16 +484,32 @@ impl Interp {
                 Value::I64(v as i64)
             }
             "log.i64" => {
-                // v0.3 Track A: `log` is a lexically-scoped capability (gated by
-                // the `with` scope at check time). The interpreter is the
-                // semantic reference: logging is modeled deterministically as an
-                // identity with a side effect — it yields its argument so it
-                // composes in expression position. Real emission plus native/wasm
-                // parity arrive in Track B.
+                // `log` is a lexically-scoped capability (gated by the `with`
+                // scope at check time). Track B: the value is emitted to stderr
+                // (a genuine side effect, matching the native/wasm runtime) and
+                // returned, so it composes in expression position. The observable
+                // *result* is the argument, which is what differential parity
+                // checks — the emission is a side channel.
                 match args.first() {
-                    Some(Value::I64(n)) => Value::I64(*n),
+                    Some(Value::I64(n)) => {
+                        eprintln!("[log] {}", n);
+                        Value::I64(*n)
+                    }
                     _ => return Err(InterpError("log.i64: expected one i64 argument".into())),
                 }
+            }
+            "clock.now" => {
+                // Deterministic monotonic tick (see `clock_tick`). Reproducible
+                // and identical to the native/wasm runtime's counter.
+                if !args.is_empty() {
+                    return Err(InterpError(format!(
+                        "arity mismatch in `clock.now`: expected 0 got {}",
+                        args.len()
+                    )));
+                }
+                let t = self.clock_tick;
+                self.clock_tick += 1;
+                Value::I64(t)
             }
             _ => {
                 // User function call.
