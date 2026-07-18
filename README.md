@@ -636,12 +636,47 @@ aury wasm-lib <file> --export <fn>[,<fn>...] [-o out.wasm]
                                  exporting the named functions (for a browser)
 aury ingest <file.json> [out]    typed-object/array JSON → canonical Aury
 aury emit-json <file.aury>       canonical Aury → array-form JSON
+aury diagram <file> [--kind call|types] [-o out.md]
+                                 render the module as a Mermaid diagram
 ```
 
 `aury compile` currently generates a native `main` with the supplied entry
 arguments embedded in the LLVM module, compiles it, and immediately runs it.
 This is suitable for differential testing and small tools; a reusable dynamic
 native library ABI is future work.
+
+### Design diagrams
+
+Because an `.aury` file carries resolved call targets, effect rows, and struct
+fields explicitly — nothing is inferred — a design diagram is an exact read-only
+walk of the typed AST. `aury diagram` emits [Mermaid](https://mermaid.js.org/)
+text (hermetic: no `dot` binary, renders natively on GitHub and in Markdown).
+
+`aury diagram <file>` (default `--kind call`) draws the call graph, with each
+function's effect row shown as a `⚡` badge and effectful functions styled — a
+view ordinary call-graph tools can't produce, because ordinary languages don't
+track capabilities. For `examples/agent/vec-pipeline.aury`:
+
+```mermaid
+%% call graph for module `vecpipeline`
+graph TD
+  scale["scale(xs: vec[f64], factor: f64) -&gt; vec[f64]"]
+  keep_above["keep-above(xs: vec[f64], lo: f64) -&gt; vec[f64]"]
+  total["total(xs: vec[f64]) -&gt; f64"]
+  pipeline["pipeline(xs: vec[f64], factor: f64, lo: f64) -&gt; f64"]
+  pipeline --> total
+  pipeline --> keep_above
+  pipeline --> scale
+```
+
+A function that declares an effect carries its capabilities in the badge — e.g.
+`aury diagram examples/agent/dice.aury` renders `roll-even() -> i64 · ⚡ rng`,
+highlighted as effectful.
+
+`aury diagram <file> --kind types` instead draws a class diagram of the module's
+structs and their fields, with a composition edge wherever one struct's field
+references another. Pass `-o out.md` to write a fenced ```` ```mermaid ```` block
+straight into a Markdown doc.
 
 ### WebAssembly (wasm32-wasi)
 
