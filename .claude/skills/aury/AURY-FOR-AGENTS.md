@@ -299,6 +299,9 @@ See `examples/agent/parse-classify.json` for the full pattern with properties.
   executable ops; the rest are checked but have no ops yet.
 - Effectful/allocating work happens inside a `region` node; `rng.next` is used
   inside one. See `examples/agent/dice.aury` for the canonical shape.
+- A `set` inside a region that writes a binding declared **outside** it is a
+  `REGION_ESCAPE` — the loop repairs it by wrapping the value in `copy` (the value
+  is unchanged; the region can then free its scratch). `copy` is a real deep copy.
 - The validator **rejects effect leaks**: using `rng.next` in a pure function is
   a rejection whose repair either adds the effect to the signature or removes the
   call.

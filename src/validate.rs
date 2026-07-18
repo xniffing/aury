@@ -205,6 +205,11 @@ pub fn check_module(module: &Module) -> ValidationOutcome {
             // so they are statically rejected (the region is the aliasing domain;
             // distinct regions are provably disjoint).
             c.check_region_aliasing(f);
+            // Region escape: a `set` of a binding declared *outside* a region
+            // publishes a region-internal value past the region boundary. It is
+            // rejected with a `copy-out` repair (wrap the value in `copy`), which
+            // makes the published value independent so the region can be freed.
+            c.check_region_escapes(f);
             total.extend(c.rejections);
         }
     }
@@ -1333,6 +1338,146 @@ impl Checker {
     /// naming the same region can overlap, so they are rejected pointwise. The
     /// repair renames one reference's region to a fresh, disjoint region (the
     /// proposal's "split into two regions").
+    /// Flag `set`s inside a region that publish a region-internal value to a
+    /// binding declared *outside* the region (an escape). The `copy-out` repair
+    /// wraps the value in `copy` — an independent value the runtime relocates to
+    /// the parent frame, so the region's own allocations can be bulk-freed. A
+    /// `set` whose value is already a `copy` is fine and not flagged.
+    fn check_region_escapes(&mut self, f: &FnDef) {
+        self.walk_region_escapes(&f.body, &mut Vec::new(), None);
+    }
+
+    /// `inner` accumulates the names bound *inside* the current region; `region`
+    /// is the enclosing region's name (`None` outside any region).
+    fn walk_region_escapes(&mut self, e: &Expr, inner: &mut Vec<String>, region: Option<&str>) {
+        match e {
+            Expr::Region { name, body, .. } => {
+                if region.is_none() {
+                    // Enter a fresh region scope with its own inner-binding set.
+                    let mut ri = Vec::new();
+                    self.walk_region_escapes(body, &mut ri, Some(name));
+                } else {
+                    // Already inside a region: stay in the same escape scope.
+                    self.walk_region_escapes(body, inner, region);
+                }
+            }
+            Expr::Set { name, value, .. } => {
+                if let Some(r) = region {
+                    if !inner.iter().any(|n| n == name)
+                        && !matches!(value.as_ref(), Expr::Copy { .. })
+                    {
+                        self.reject_region_escape(value.id(), name, r);
+                    }
+                }
+                self.walk_region_escapes(value, inner, region);
+            }
+            Expr::Let { name, init, body, .. } => {
+                self.walk_region_escapes(init, inner, region);
+                if region.is_some() {
+                    inner.push(name.clone());
+                    self.walk_region_escapes(body, inner, region);
+                    inner.pop();
+                } else {
+                    self.walk_region_escapes(body, inner, region);
+                }
+            }
+            Expr::Match { scrut, arms, .. } => {
+                self.walk_region_escapes(scrut, inner, region);
+                for a in arms {
+                    let bound = matches!(&a.pattern, Pattern::Bind(_));
+                    if let Pattern::Bind(n) = &a.pattern {
+                        if region.is_some() {
+                            inner.push(n.clone());
+                        }
+                    }
+                    self.walk_region_escapes(&a.body, inner, region);
+                    if bound && region.is_some() {
+                        inner.pop();
+                    }
+                }
+            }
+            Expr::Call { args, .. } => {
+                for a in args {
+                    self.walk_region_escapes(a, inner, region);
+                }
+            }
+            Expr::If { cond, then, els, .. } => {
+                self.walk_region_escapes(cond, inner, region);
+                self.walk_region_escapes(then, inner, region);
+                self.walk_region_escapes(els, inner, region);
+            }
+            Expr::Loop { body, .. } => self.walk_region_escapes(body, inner, region),
+            Expr::Break { value, .. } => self.walk_region_escapes(value, inner, region),
+            Expr::Return { value, .. } => self.walk_region_escapes(value, inner, region),
+            Expr::Block { stmts, tail, .. } => {
+                for s in stmts {
+                    self.walk_region_escapes(s, inner, region);
+                }
+                self.walk_region_escapes(tail, inner, region);
+            }
+            Expr::With { body, .. } => self.walk_region_escapes(body, inner, region),
+            Expr::Copy { value, .. } => self.walk_region_escapes(value, inner, region),
+            Expr::VecNew { elems, .. } => {
+                for el in elems {
+                    self.walk_region_escapes(el, inner, region);
+                }
+            }
+            Expr::Index { target, index, .. } => {
+                self.walk_region_escapes(target, inner, region);
+                self.walk_region_escapes(index, inner, region);
+            }
+            Expr::VecPush { target, value, .. } => {
+                self.walk_region_escapes(target, inner, region);
+                self.walk_region_escapes(value, inner, region);
+            }
+            Expr::Len { target, .. } => self.walk_region_escapes(target, inner, region),
+            Expr::StructNew { fields, .. } => {
+                for (_, v) in fields {
+                    self.walk_region_escapes(v, inner, region);
+                }
+            }
+            Expr::Field { target, .. } => self.walk_region_escapes(target, inner, region),
+            Expr::Cast { value, .. } => self.walk_region_escapes(value, inner, region),
+            Expr::Lit { .. } | Expr::Ref { .. } => {}
+        }
+    }
+
+    fn reject_region_escape(&mut self, value_node: NodeId, binding: &str, region: &str) {
+        let rid = self.next_repair_id();
+        // (copy ?) — the driver substitutes the escaping value for `?`.
+        let template = Sexpr::List(vec![Sexpr::Atom("copy".into()), Sexpr::Atom("?".into())]);
+        self.rejections.push(Rejection {
+            gate: Gate::Region,
+            kind: "REGION_ESCAPE".into(),
+            node: value_node,
+            path: format!("set `{}` in region `{}`", binding, region),
+            expected: format!("a value independent of region `{}` (a `copy`)", region),
+            received: format!(
+                "region-internal value published to outer binding `{}`",
+                binding
+            ),
+            context: {
+                let mut m = HashMap::new();
+                m.insert("binding".into(), binding.to_string());
+                m.insert("region".into(), region.to_string());
+                m
+            },
+            repairs: vec![Repair {
+                id: rid,
+                action: "copy_out".into(),
+                with: Some(template),
+                cost: 2,
+                preserves_effects: true,
+                preserves_contracts: true,
+                propagates: vec![],
+                note: format!(
+                    "Copy the value out of region `{}` so `{}` owns an independent value.",
+                    region, binding
+                ),
+            }],
+        });
+    }
+
     fn check_region_aliasing(&mut self, f: &FnDef) {
         // All region names in the signature (for picking a disjoint fresh name).
         let mut used_regions: HashSet<String> = HashSet::new();

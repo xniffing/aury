@@ -97,6 +97,15 @@
       ]
     },
     {
+      "name": "region-escape",
+      "intent": "A region publishes a vector to an outer binding via `set` (an escape); the loop should copy it out (wrap in `copy`) so the region can be arena-managed, then accept.",
+      "program": "../examples/agent/region-escape.aury",
+      "checks": [
+        { "fn": "total", "args": ["5"], "expect": "2" },
+        { "fn": "total", "args": ["0"], "expect": "2" }
+      ]
+    },
+    {
       "name": "calculator",
       "intent": "A small calculator library (add, multiply, factorial, gcd, fib, ...) with properties.",
       "program": "../projects/calculator/calculator.json",

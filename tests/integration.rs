@@ -280,6 +280,67 @@ fn repair_loop_wraps_in_capability_scope() {
     assert!(check_module(&module(&res.source)).is_accepted());
 }
 
+// ---- v0.3 Track C: region-escape gate + real deep-copy ----
+
+#[test]
+fn region_escape_is_rejected_and_repaired_by_copy_out() {
+    // A `set` of a binding declared outside a region publishes a region-internal
+    // value past the boundary — REGION_ESCAPE, repaired by wrapping the value in
+    // `copy`. The loop applies it; the region then becomes arena-managed.
+    let src = r#"
+(module m
+  (fn build (params (n i64)) (ret i64)
+    (body
+      (let acc (vec i64) (vec-new (vec i64))
+        (block
+          (region r
+            (set acc (vec-push (ref acc) (ref n))))
+          (len (ref acc)))))))"#;
+    match check_module(&module(src)) {
+        ValidationOutcome::Rejected(rejs) => {
+            let r = rejs.iter().find(|r| r.kind == "REGION_ESCAPE")
+                .expect("expected REGION_ESCAPE");
+            assert_eq!(r.repairs[0].action, "copy_out");
+        }
+        _ => panic!("outer-set-in-region should be rejected"),
+    }
+    let res = aury::repair_loop(src, false, 0);
+    assert!(res.accepted, "loop should copy-out and accept: {:?}", res.log);
+    assert!(res.source.contains("(copy"), "repaired: {}", res.source);
+    assert!(check_module(&module(&res.source)).is_accepted());
+}
+
+#[test]
+fn in_region_set_is_not_a_region_escape() {
+    // A `set` of a binding declared *inside* the region is not an escape — the
+    // loop/accumulator pattern (build a vector then break it out) is unaffected.
+    let src = r#"
+(module m
+  (fn f (params (n i64)) (ret i64)
+    (body
+      (region r
+        (let acc (vec i64) (vec-new (vec i64))
+          (block
+            (set acc (vec-push (ref acc) (ref n)))
+            (len (ref acc))))))))"#;
+    assert!(check_module(&module(src)).is_accepted(), "in-region set must not be flagged");
+}
+
+#[test]
+fn copy_of_an_aggregate_is_value_equal() {
+    // Real deep-copy `copy` yields an independent value equal to its source.
+    let src = r#"
+(module m
+  (fn dup-len (params (xs (vec i64))) (ret i64)
+    (body (let ys (vec i64) (copy (ref xs)) (len (ref ys))))))"#;
+    let m = module(src);
+    assert!(check_module(&m).is_accepted());
+    let mut interp = Interp::new(&m, 0);
+    let xs = aury::value_io::parse_cli_value(&m, &aury::types::Type::Vec(Box::new(aury::types::Type::I64)), "[1,2,3,4]").unwrap();
+    let v = interp.call_fn("dup-len", vec![xs]).unwrap();
+    assert_eq!(aury::value_io::show_value(&v), "4");
+}
+
 // ---- v0.3 Track B: effectful scoped-capability ops execute ----
 
 #[test]
@@ -906,6 +967,12 @@ fn native_aggregate_rng_and_edge_parity_matrix() {
         ("region-early", vec!["5".into()]),
         ("region-early", vec!["0".into()]),
         ("region-early", vec!["-2".into()]),
+        // v0.3 Track C: copy-out of an outer-set escape; the region is
+        // arena-managed and the published value survives.
+        ("region-escape", vec!["3".into()]),
+        ("region-escape", vec!["0".into()]),
+        // v0.3 Track C: real deep-copy `copy` of an aggregate.
+        ("copy-vec", vec!["[4,5,6]".into()]),
     ];
     let runtime = format!("{}/runtime/aury_rt.c", env!("CARGO_MANIFEST_DIR"));
     for (index, (entry, args)) in cases.into_iter().enumerate() {
