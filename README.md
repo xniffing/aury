@@ -134,7 +134,7 @@ algorithms, transformations, and small tools.
 | Native vectors, structs, results, strings, and RNG | Implemented |
 | Interpreter/native differential tests | Implemented |
 | Arena lifetime semantics for escape-free regions | Implemented (bulk-free + result-relocation; escaping regions fall back to process-lifetime) |
-| `with` capability scope + deep-copy `copy` + `REGION_ESCAPE` gate | Deferred to v0.3 |
+| Generation-reliability record/replay harness | Implemented (Aury-vs-Python scoring; a real recorded run at sample size is deferred) |
 | SMT contract discharge | Not implemented |
 | Real MLIR dialect pipeline | Not implemented; v0 emits LLVM IR directly |
 | General FFI and OS capability surface | Not implemented |
