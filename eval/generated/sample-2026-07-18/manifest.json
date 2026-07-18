@@ -1,0 +1,8 @@
+{
+  "model": "sample",
+  "date": "2026-07-18",
+  "k": 2,
+  "prompt_hashes": {"aury": "synthetic", "python": "synthetic"},
+  "tasks": ["add", "gcd"],
+  "note": "Synthetic committed sample proving the record/replay pipeline end to end (no real model call). Real runs live under eval/generated/<model>-<date>/ from generate.py."
+}
