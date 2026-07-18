@@ -127,6 +127,8 @@ algorithms, transformations, and small tools.
 | Mechanical effect-row repair convergence | Implemented (widen / drop-unused / unknown-cap applied by the loop) |
 | Lexical capability scope (`with`) + scope-gate repair | Implemented (checking + discharge + `wrap_in_capability_scope`) |
 | Executable scoped capabilities (`log.i64`, `clock.now`) | Implemented (interp + native + wasm parity; deterministic clock) |
+| Region-escape gate (`REGION_ESCAPE`) + `copy-out` repair | Implemented (outer-`set` escape freed via parent-frame relocation) |
+| Real deep-copy `copy` | Implemented (fresh independent aggregate; interp + native + wasm parity) |
 | Tree-walking interpreter | Implemented |
 | Static, type-aware LLVM lowering | Implemented |
 | Native vectors, structs, results, strings, and RNG | Implemented |
@@ -850,11 +852,17 @@ allocation accounting and is observably transparent: the interpreter, native, an
 wasm backends produce identical values (the interpreter needs no change, since
 Rust owns its memory).
 
-The remaining genuine escapes — a `set` of a binding declared *outside* the
-region, a `break` out of the region, or a nested region — conservatively fall back
-to process-lifetime allocation (sound, just not freed). A static `REGION_ESCAPE`
-rejection for the `set`-escape case, and `copy` as a real deep-copy rather than a
-pass-through, are the remaining steps.
+A `set` that publishes a region-internal value to a binding declared *outside*
+the region is a static **`REGION_ESCAPE`** rejection, repaired mechanically by
+**`copy-out`**: the value is wrapped in `copy`, which the runtime relocates to
+the parent frame (`aury_copy_to_parent`). That makes the published value
+independent, so the region becomes arena-managed and frees its scratch — a leak
+turned into a freed region, verified by allocation accounting. `copy` itself is
+now a **real deep copy** (`aury_copy_value` walks the value descriptor to build a
+fresh, independent aggregate), not a pass-through, byte-identical across backends.
+
+The remaining genuine escapes — a `break` out of the region, or a nested region —
+conservatively fall back to process-lifetime allocation (sound, just not freed).
 
 ### Contracts and proof
 

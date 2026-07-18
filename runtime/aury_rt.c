@@ -482,6 +482,28 @@ int64_t aury_region_exit_keep(int64_t result, const char *descriptor) {
     return relocated;
 }
 
+// Deep-copy a value described by `descriptor` into the *current* frame (the
+// normal allocators register it wherever a region is active). This is the real
+// `copy`: an aggregate result is a fresh, independent allocation rather than an
+// alias of its source. Scalars carry no pointer and are returned unchanged.
+int64_t aury_copy_value(int64_t bits, const char *descriptor) {
+    const char *cursor = descriptor;
+    return relocate_value(bits, &cursor);
+}
+
+// Deep-copy a value into the *parent* frame, so it survives the current region's
+// bulk free. Used to `copy`-out a value published past the region boundary (an
+// outer `set`), which is what lets an otherwise-escaping region be arena-managed.
+// With no active region this is an ordinary copy.
+int64_t aury_copy_to_parent(int64_t bits, const char *descriptor) {
+    if (aury_arena_top < 0) return aury_copy_value(bits, descriptor);
+    aury_arena_top--; // relocation registers in the parent frame
+    const char *cursor = descriptor;
+    int64_t copied = relocate_value(bits, &cursor);
+    aury_arena_top++;
+    return copied;
+}
+
 void aury_str_print(aury_str string) {
     print_string(string);
     putchar('\n');

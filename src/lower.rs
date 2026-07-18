@@ -242,6 +242,8 @@ fn lower_set(module: &Module, set: &HashSet<String>, skip_unsupported: bool) -> 
     l.out_str("declare void @aury_region_enter()\n");
     l.out_str("declare void @aury_region_exit()\n");
     l.out_str("declare i64 @aury_region_exit_keep(i64, ptr)\n");
+    l.out_str("declare i64 @aury_copy_value(i64, ptr)\n");
+    l.out_str("declare i64 @aury_copy_to_parent(i64, ptr)\n");
     l.out_str("declare void @aury_rng_init(i64)\n");
     l.out_str("declare i64 @aury_rng_next()\n");
     l.out_str("declare i64 @aury_clock_now()\n");
@@ -672,7 +674,37 @@ impl Lowerer {
             // (v0 capabilities are ambient/deterministic), so lowering is a
             // pass-through of its body.
             Expr::With { body, .. } => self.lower_expr(body),
-            Expr::Copy { value, .. } => self.lower_expr(value),
+            Expr::Copy { value, .. } => {
+                let (v, ty, d) = self.lower_expr(value);
+                if d { return (v, ty, true); }
+                let vty = self.infer_type(value);
+                // A real deep copy for aggregates: allocate a fresh, independent
+                // value via the runtime. Scalars (no pointer) pass through.
+                match self.type_descriptor_self(&vty) {
+                    Ok(desc) if ty == "ptr" => {
+                        let dg = self.descriptor_global(&desc);
+                        let bits = self.value_to_bits(v.unwrap(), &ty);
+                        // Inside an arena region, a copy is relocated to the
+                        // parent frame so it survives the region's bulk free (this
+                        // is what lets a `copy`-out escape the region soundly).
+                        // Outside any arena region, an ordinary copy into the
+                        // current (process-lifetime) allocator.
+                        let rt = if self.active_arena_regions > 0 {
+                            "aury_copy_to_parent"
+                        } else {
+                            "aury_copy_value"
+                        };
+                        let copied = self.fresh();
+                        self.out_str(&format!(
+                            "  {} = call i64 @{}(i64 {}, ptr {})\n",
+                            copied, rt, bits, dg
+                        ));
+                        let (val, llvm_ty) = self.bits_to_value(copied, &vty);
+                        (Some(val), llvm_ty, false)
+                    }
+                    _ => (v, ty, false),
+                }
+            }
             Expr::Cast { target, value, .. } => self.lower_cast(target, value),
             Expr::VecNew { ty, elems, .. } => self.lower_vec_new(ty, elems),
             Expr::Index { target, index, .. } => self.lower_index(target, index),
@@ -1674,7 +1706,17 @@ impl Lowerer {
                 Expr::Return { value, .. } => walk(value, inner, depth),
                 Expr::Break { value, .. } => depth == 0 || walk(value, inner, depth),
                 Expr::Set { name, value, .. } => {
-                    !inner.iter().any(|n| n == name) || walk(value, inner, depth)
+                    if inner.iter().any(|n| n == name) {
+                        // In-region binding: only escapes if the value does.
+                        walk(value, inner, depth)
+                    } else if matches!(value.as_ref(), Expr::Copy { .. }) {
+                        // Outer binding, but the published value is a `copy` —
+                        // relocated to the parent frame at lowering, so it is
+                        // independent of this region and does not escape it.
+                        false
+                    } else {
+                        true
+                    }
                 }
                 Expr::Region { .. } => true, // nested region: conservative
                 // `with` is transparent to memory — it only scopes capabilities,

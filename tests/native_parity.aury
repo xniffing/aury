@@ -266,4 +266,19 @@
               (return (vec-new (vec i64) (ref n) (ref n)))
               unit)
           (vec-new (vec i64) (lit 0))))))
+  ; v0.3 Track C: an outer `set` publishes a region value past the boundary via a
+  ; `copy` (the copy-out repair). The copy is relocated to the parent frame, so
+  ; the region is arena-managed and frees its scratch while the published value
+  ; survives — byte-identical to the interpreter.
+  (fn region-escape (params (n i64)) (ret (vec i64))
+    (body
+      (let acc (vec i64) (vec-new (vec i64))
+        (block
+          (region r
+            (set acc (copy (vec-push (vec-push (ref acc) (ref n)) (call i64.mul (ref n) (lit 2))))))
+          (ref acc)))))
+  ; v0.3 Track C: real deep-copy `copy` — a fresh, independent aggregate that is
+  ; value-equal to its source, byte-identical across interp/native/wasm.
+  (fn copy-vec (params (xs (vec i64))) (ret (vec i64))
+    (body (copy (ref xs))))
 )

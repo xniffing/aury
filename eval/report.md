@@ -17,11 +17,12 @@ Columns: **First-shot** = the model's initial program passed type + intent check
 | vec-use-after-move | region✗ | ✓ | 1 | 2/2 |  |
 | log-scope | effect✗ | ✓ | 1 | 2/2 |  |
 | clock-scope | effect✗ | ✓ | 1 | 2/2 |  |
+| region-escape | region✗ | ✓ | 1 | 2/2 |  |
 | calculator | ✓ | ✓ | 0 | 3/3 |  |
 | unterminated | parse✗ | ✓ | 1 | 1/1 |  |
 | false-property | intent✗ | ø | 0 | — | correctly rejected (intent gate) |
 
-**14/14 outcomes as expected** · first-shot-valid 8 · rescued by repair 6 · oracle checks 22/22.
+**15/15 outcomes as expected** · first-shot-valid 8 · rescued by repair 7 · oracle checks 24/24.
 
 ### First-shot failures by gate
 
@@ -31,7 +32,7 @@ Columns: **First-shot** = the model's initial program passed type + intent check
 |------|:----------------:|:---------:|:---------:|
 | parse | 1 | 1 | 0 |
 | effect | 3 | 3 | 0 |
-| region | 2 | 2 | 0 |
+| region | 3 | 3 | 0 |
 | intent | 1 | 0 | 1 |
 
 **v0.2 result:** every structural gate exercised (parse + effect + region) shows ≥1 mechanical convergence — the closed loop repairs effect and region rejections to acceptance, not just parse; interpreter, native, and wasm backends produce byte-identical values throughout.

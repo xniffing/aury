@@ -1,0 +1,19 @@
+; v0.3 Track C: region-escape convergence case for the evaluation corpus.
+;
+; `total` builds a vector inside a `region`, but publishes it to `acc` — a
+; binding declared *outside* the region — with a `set`. That escapes the region:
+; the vector's allocation would outlive the region's arena. The region gate
+; rejects it with REGION_ESCAPE, and the only repair is `copy-out`: wrap the
+; published value in `copy`. The loop applies it, producing an independent value
+; the runtime relocates to the parent frame, so the region becomes arena-managed
+; and frees its scratch while `acc` keeps the copy.
+;
+; `copy` is value-equal to its source, so the oracle is unchanged by the repair.
+(module regionescape
+  (fn total (params (n i64)) (ret i64)
+    (body
+      (let acc (vec i64) (vec-new (vec i64))
+        (block
+          (region r
+            (set acc (vec-push (vec-push (ref acc) (ref n)) (ref n))))
+          (len (ref acc)))))))
