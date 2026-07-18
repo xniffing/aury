@@ -40,6 +40,10 @@ COMMANDS:
   eval <corpus.json> [--seed N] [--md out.md] [--csv out.csv]
                              Run the closed loop over a corpus of (intent, program)
                              tasks and print a repair-convergence table.
+  diagram <file> [--kind call|types] [-o out.md]
+                             Render the module's design as a Mermaid diagram:
+                             `call` (call graph with effect badges, the default)
+                             or `types` (struct data-model class diagram).
 
 EXAMPLES:
   aury validate examples/add.aury
@@ -47,6 +51,7 @@ EXAMPLES:
   aury test examples/sort.aury 12345
   aury loop examples/broken.aury 12345
   aury ingest examples/gcd.json examples/gcd.aury
+  aury diagram examples/agent/vec-pipeline.aury
 ";
 
 const NATIVE_RUNTIME_SOURCE: &str = include_str!("../runtime/aury_rt.c");
@@ -104,6 +109,7 @@ fn main() -> ExitCode {
         "ingest" => cmd_ingest(&args[2..]),
         "emit-json" => cmd_emit_json(&args[2..]),
         "eval" => cmd_eval(&args[2..]),
+        "diagram" => cmd_diagram(&args[2..]),
         other => {
             eprintln!("unknown command: {}\n\n{}", other, USAGE);
             return ExitCode::from(2);
@@ -301,6 +307,38 @@ fn cmd_lower(args: &[String]) -> Result<ExitCode, String> {
     let path = args.first().ok_or("lower <file>")?;
     let m = build(path)?;
     print!("{}", lower_to_mlir_sketch(&m));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// diagram: render the module's design as Mermaid. A read-only AST walk — it
+/// does not validate first (a diagram of an in-progress module is still useful),
+/// and it stays hermetic (emits text; no `dot`/renderer dependency).
+fn cmd_diagram(args: &[String]) -> Result<ExitCode, String> {
+    let path = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or("diagram <file> [--kind call|types] [-o out.md]")?;
+    let flag = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let kind = match flag("--kind") {
+        Some(k) => aury::diagram::Kind::parse(&k)?,
+        None => aury::diagram::Kind::Call,
+    };
+    let m = build(path)?;
+    let mermaid = aury::diagram::render(&m, kind);
+    // Wrap in a fenced ```mermaid block so the output drops straight into
+    // Markdown (GitHub, the README, artifacts) and renders.
+    let fenced = format!("```mermaid\n{}```\n", mermaid);
+    if let Some(out) = flag("-o").or_else(|| flag("--out")) {
+        std::fs::write(&out, &fenced).map_err(|e| format!("write {}: {}", out, e))?;
+        eprintln!("wrote {}", out);
+    } else {
+        print!("{}", fenced);
+    }
     Ok(ExitCode::SUCCESS)
 }
 

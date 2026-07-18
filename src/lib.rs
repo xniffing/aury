@@ -23,6 +23,7 @@
 //! - [`eval`]: the evaluation harness — repair convergence over a task corpus.
 
 pub mod ast;
+pub mod diagram;
 pub mod eval;
 pub mod id;
 pub mod interp;
