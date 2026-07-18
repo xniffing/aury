@@ -2,7 +2,7 @@
 
 ### A repair-oriented intermediate language for reliable AI-generated programs
 
-> **Research prototype · v0 · Rust implementation · LLVM native backend**
+> **Research prototype · v0.2 · Rust implementation · LLVM native backend**
 
 Aury is a small, strongly typed, s-expression intermediate language designed
 around a closed LLM repair loop. Its central claim is not that language models
